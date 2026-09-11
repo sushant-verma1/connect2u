@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm lint
+
+      - run: pnpm format:check
+
+      - run: pnpm test
+        env:
+          NODE_ENV: test
+          PORT: "3000"
+          LOG_LEVEL: silent
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/otp_router
+          REDIS_URL: redis://localhost:6379
+          OTP_PEPPER: ci-otp-pepper
+          PHONE_HASH_PEPPER: ci-phone-pepper
+          API_KEY_PEPPER: ci-api-key-pepper

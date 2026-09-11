@@ -1,0 +1,10 @@
+.env
+.env.local
+node_modules
+dist
+coverage
+*.log
+
+# Local agent-tooling state, not project source
+.claude/
+.serena/

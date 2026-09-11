@@ -1,0 +1,9 @@
+{
+  "name": "@otp-router/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "typecheck": "echo 'dashboard: no code until Phase 8'",
+    "build": "echo 'dashboard: no code until Phase 8'"
+  }
+}
