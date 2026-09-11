@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import type { PgClient } from "@otp-router/db";
-import { pingPg } from "@otp-router/db";
+import type { PgClient } from "@otp-router/db/client";
+import { pingPg } from "@otp-router/db/client";
 import type { Redis } from "ioredis";
 
 export function registerHealthRoutes(app: FastifyInstance, pg: PgClient, redis: Redis): void {

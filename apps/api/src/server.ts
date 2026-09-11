@@ -1,4 +1,4 @@
-import { createPgClient } from "@otp-router/db";
+import { createPgClient } from "@otp-router/db/client";
 import { Redis } from "ioredis";
 import { loadConfig } from "./config.js";
 import { buildApp } from "./app.js";

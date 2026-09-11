@@ -1,15 +1,19 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import helmet from "@fastify/helmet";
-import type { PgClient } from "@otp-router/db";
+import type { PgClient } from "@otp-router/db/client";
+import type { Provider } from "@otp-router/providers/provider";
+import { SimulatedProvider } from "@otp-router/providers/simulated";
 import type { Redis } from "ioredis";
 import type { Config } from "./config.js";
 import { registerCorrelationId } from "./plugins/correlation-id.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerVerificationRoutes } from "./routes/verification.js";
 
 export async function buildApp(
   config: Config,
   pg: PgClient,
   redis: Redis,
+  provider: Provider = new SimulatedProvider(),
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -21,6 +25,7 @@ export async function buildApp(
   await app.register(helmet);
   registerCorrelationId(app);
   registerHealthRoutes(app, pg, redis);
+  registerVerificationRoutes(app, pg, provider, config);
 
   return app;
 }

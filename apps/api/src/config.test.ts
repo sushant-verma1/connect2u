@@ -10,6 +10,7 @@ const validEnv = {
   OTP_PEPPER: "otp-pepper",
   PHONE_HASH_PEPPER: "phone-pepper",
   API_KEY_PEPPER: "api-key-pepper",
+  PHONE_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
 };
 
 describe("loadConfig", () => {
@@ -27,5 +28,10 @@ describe("loadConfig", () => {
   it("fails fast when DATABASE_URL is missing", () => {
     const { DATABASE_URL, ...withoutDatabaseUrl } = validEnv;
     expect(() => loadConfig(withoutDatabaseUrl)).toThrow(/DATABASE_URL/);
+  });
+
+  it("fails fast when PHONE_ENCRYPTION_KEY is not 32 bytes", () => {
+    const badEnv = { ...validEnv, PHONE_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") };
+    expect(() => loadConfig(badEnv)).toThrow(/PHONE_ENCRYPTION_KEY/);
   });
 });

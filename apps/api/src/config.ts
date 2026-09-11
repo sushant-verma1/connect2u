@@ -8,7 +8,7 @@ import { z } from "zod";
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]),
   PORT: z.coerce.number().int().positive(),
-  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
@@ -17,6 +17,17 @@ const envSchema = z.object({
   OTP_PEPPER: z.string().min(1),
   PHONE_HASH_PEPPER: z.string().min(1),
   API_KEY_PEPPER: z.string().min(1),
+
+  // AES-256-GCM key for `verifications.phone_encrypted` (R7.3: the active verification
+  // record is the one place the real number is recoverable). Base64, must decode to 32
+  // bytes. Not one of the three HMAC peppers — reversible encryption is a different
+  // primitive and must not share key material with one-way hashing.
+  PHONE_ENCRYPTION_KEY: z
+    .string()
+    .min(1)
+    .refine((value) => Buffer.from(value, "base64").length === 32, {
+      message: "must be base64 encoding exactly 32 bytes (AES-256)",
+    }),
 
   META_PHONE_NUMBER_ID: z.string().optional(),
   META_WABA_ID: z.string().optional(),
@@ -35,12 +46,13 @@ const envSchema = z.object({
 export type Config = Readonly<{
   nodeEnv: "development" | "test" | "production";
   port: number;
-  logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace";
+  logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace" | "silent";
   databaseUrl: string;
   redisUrl: string;
   otpPepper: string;
   phoneHashPepper: string;
   apiKeyPepper: string;
+  phoneEncryptionKey: string;
 }>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -62,5 +74,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     otpPepper: data.OTP_PEPPER,
     phoneHashPepper: data.PHONE_HASH_PEPPER,
     apiKeyPepper: data.API_KEY_PEPPER,
+    phoneEncryptionKey: data.PHONE_ENCRYPTION_KEY,
   };
 }
