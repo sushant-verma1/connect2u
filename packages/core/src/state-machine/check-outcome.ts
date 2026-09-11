@@ -1,11 +1,14 @@
-export type CheckOutcome =
-  | "verified"
-  | "invalid_code"
-  | "expired"
-  | "already_verified"
-  | "attempts_exceeded"
-  | "not_found"
-  | "failed";
+export const CHECK_OUTCOMES = [
+  "verified",
+  "invalid_code",
+  "expired",
+  "already_verified",
+  "attempts_exceeded",
+  "not_found",
+  "failed",
+] as const;
+
+export type CheckOutcome = (typeof CHECK_OUTCOMES)[number];
 
 /**
  * R1.2.6 / ARCHITECTURE.md §3: maps a terminal verification state to the /check

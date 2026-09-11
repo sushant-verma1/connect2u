@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import { ulid } from "ulid";
 import { z } from "zod";
 import type { PgClient } from "@otp-router/db/client";
@@ -8,6 +9,7 @@ import {
 } from "@otp-router/db/repositories/verifications";
 import { insertDeliveryAttempt } from "@otp-router/db/repositories/delivery-attempts";
 import type { Provider } from "@otp-router/providers/provider";
+import { CHECK_OUTCOMES } from "@otp-router/core/state-machine/check-outcome";
 import { createApiKeyAuth } from "../auth/api-key-auth.js";
 import { generateCode } from "../crypto/code.js";
 import { hmacHex } from "../crypto/hmac.js";
@@ -29,9 +31,42 @@ const startBodySchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
+const startResponseSchema = z.object({
+  verification_id: z.string(),
+  status: z.literal("pending"),
+  channel_attempted: z.literal(CHANNEL),
+  expires_at: z.string(),
+});
+
 const checkBodySchema = z.object({
   verification_id: z.string().min(1),
   code: z.string().min(1),
+});
+
+const checkResponseSchema = z.object({
+  verification_id: z.string(),
+  status: z.enum(CHECK_OUTCOMES),
+  channel_verified: z.string().optional(),
+  attempts_used: z.number().optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+const errorResponseSchema = z.object({
+  error: z.string(),
+});
+
+const getParamsSchema = z.object({
+  id: z.string().min(1),
+});
+
+const getResponseSchema = z.object({
+  verification_id: z.string(),
+  status: z.enum(["pending", "verified", "expired", "burned", "failed"]),
+  expires_at: z.string(),
+  attempts_used: z.number(),
+  max_attempts: z.number(),
+  channel_verified: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 export function registerVerificationRoutes(
@@ -40,104 +75,120 @@ export function registerVerificationRoutes(
   provider: Provider,
   config: Config,
 ): void {
+  const server = app.withTypeProvider<ZodTypeProvider>();
   const apiKeyAuth = createApiKeyAuth(pg, config.apiKeyPepper);
 
-  app.post("/v1/verification/start", { preHandler: apiKeyAuth }, async (request, reply) => {
-    const parsed = startBodySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.code(422).send({ error: "validation_error", details: parsed.error.issues });
-    }
-    const body = parsed.data;
+  server.post(
+    "/v1/verification/start",
+    {
+      preHandler: apiKeyAuth,
+      schema: {
+        body: startBodySchema,
+        response: { 202: startResponseSchema, 422: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      const body = request.body;
 
-    if (body.metadata && Buffer.byteLength(JSON.stringify(body.metadata)) > MAX_METADATA_BYTES) {
-      return reply.code(422).send({ error: "metadata_too_large" });
-    }
+      if (body.metadata && Buffer.byteLength(JSON.stringify(body.metadata)) > MAX_METADATA_BYTES) {
+        return reply.code(422).send({ error: "metadata_too_large" });
+      }
 
-    const normalizedPhone = normalizePhoneNumber(body.phone_number);
-    if (!normalizedPhone) {
-      return reply.code(422).send({ error: "invalid_phone_number" });
-    }
+      const normalizedPhone = normalizePhoneNumber(body.phone_number);
+      if (!normalizedPhone) {
+        return reply.code(422).send({ error: "invalid_phone_number" });
+      }
 
-    const code = generateCode(body.code_length);
-    const expiresAt = new Date(Date.now() + body.ttl_seconds * 1000);
-    const verificationId = `ver_${ulid()}`;
+      const code = generateCode(body.code_length);
+      const expiresAt = new Date(Date.now() + body.ttl_seconds * 1000);
+      const verificationId = `ver_${ulid()}`;
 
-    await insertVerification(pg, {
-      id: verificationId,
-      accountId: request.account.id,
-      phoneHash: hashPhone(normalizedPhone, config.phoneHashPepper),
-      phoneEncrypted: encryptPhone(normalizedPhone, config.phoneEncryptionKey),
-      codeHmac: hmacHex(code, config.otpPepper),
-      expiresAt,
-      metadataJson: body.metadata ?? {},
-    });
-
-    const attemptId = `att_${ulid()}`;
-    try {
-      const sendResult = await provider.send({
-        phoneNumber: normalizedPhone,
-        code,
-        channel: CHANNEL,
-      });
-      await insertDeliveryAttempt(pg, {
-        id: attemptId,
-        verificationId,
+      await insertVerification(pg, {
+        id: verificationId,
         accountId: request.account.id,
-        channel: CHANNEL,
-        provider: "simulated",
-        providerMessageId: sendResult.providerMessageId,
-        status: "sent",
-        sentAt: new Date(),
+        phoneHash: hashPhone(normalizedPhone, config.phoneHashPepper),
+        phoneEncrypted: encryptPhone(normalizedPhone, config.phoneEncryptionKey),
+        codeHmac: hmacHex(code, config.otpPepper),
+        expiresAt,
+        metadataJson: body.metadata ?? {},
       });
-    } catch {
-      // R5.6 / I4: the failure is recorded, never thrown back to the caller — fallback
-      // logic lands in Phase 3. /start still returns 202; delivery is best-effort here.
-      await insertDeliveryAttempt(pg, {
-        id: attemptId,
-        verificationId,
+
+      const attemptId = `att_${ulid()}`;
+      try {
+        const sendResult = await provider.send({
+          phoneNumber: normalizedPhone,
+          code,
+          channel: CHANNEL,
+        });
+        await insertDeliveryAttempt(pg, {
+          id: attemptId,
+          verificationId,
+          accountId: request.account.id,
+          channel: CHANNEL,
+          provider: "simulated",
+          providerMessageId: sendResult.providerMessageId,
+          status: "sent",
+          sentAt: new Date(),
+        });
+      } catch {
+        // R5.6 / I4: the failure is recorded, never thrown back to the caller — fallback
+        // logic lands in Phase 3. /start still returns 202; delivery is best-effort here.
+        await insertDeliveryAttempt(pg, {
+          id: attemptId,
+          verificationId,
+          accountId: request.account.id,
+          channel: CHANNEL,
+          provider: "simulated",
+          status: "failed",
+          errorCode: "provider_error",
+          failedAt: new Date(),
+        });
+      }
+
+      return reply.code(202).send({
+        verification_id: verificationId,
+        status: "pending",
+        channel_attempted: CHANNEL,
+        expires_at: expiresAt.toISOString(),
+      });
+    },
+  );
+
+  server.post(
+    "/v1/verification/check",
+    {
+      preHandler: apiKeyAuth,
+      schema: { body: checkBodySchema, response: { 200: checkResponseSchema } },
+    },
+    async (request, reply) => {
+      const body = request.body;
+
+      const result = await checkVerification(pg, {
+        verificationId: body.verification_id,
         accountId: request.account.id,
-        channel: CHANNEL,
-        provider: "simulated",
-        status: "failed",
-        errorCode: "provider_error",
-        failedAt: new Date(),
+        code: body.code,
+        otpPepper: config.otpPepper,
       });
-    }
 
-    return reply.code(202).send({
-      verification_id: verificationId,
-      status: "pending",
-      channel_attempted: CHANNEL,
-      expires_at: expiresAt.toISOString(),
-    });
-  });
+      return reply.code(200).send({
+        verification_id: body.verification_id,
+        status: result.outcome,
+        channel_verified: result.verification?.verifiedChannel ?? undefined,
+        attempts_used: result.verification?.attemptsUsed,
+        metadata: result.verification?.metadataJson,
+      });
+    },
+  );
 
-  app.post("/v1/verification/check", { preHandler: apiKeyAuth }, async (request, reply) => {
-    const parsed = checkBodySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.code(422).send({ error: "validation_error", details: parsed.error.issues });
-    }
-    const body = parsed.data;
-
-    const result = await checkVerification(pg, {
-      verificationId: body.verification_id,
-      accountId: request.account.id,
-      code: body.code,
-      otpPepper: config.otpPepper,
-    });
-
-    return reply.code(200).send({
-      verification_id: body.verification_id,
-      status: result.outcome,
-      channel_verified: result.verification?.verifiedChannel ?? undefined,
-      attempts_used: result.verification?.attemptsUsed,
-      metadata: result.verification?.metadataJson,
-    });
-  });
-
-  app.get<{ Params: { id: string } }>(
+  server.get(
     "/v1/verification/:id",
-    { preHandler: apiKeyAuth },
+    {
+      preHandler: apiKeyAuth,
+      schema: {
+        params: getParamsSchema,
+        response: { 200: getResponseSchema, 404: errorResponseSchema },
+      },
+    },
     async (request, reply) => {
       const { id } = request.params;
       const verification = await findVerificationScoped(pg, id, request.account.id);

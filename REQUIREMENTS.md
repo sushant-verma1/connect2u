@@ -210,7 +210,7 @@ dead-letter, per-account endpoint config.
 
 | #    | Requirement                                                                                                 | Tag   |
 | ---- | ----------------------------------------------------------------------------------------------------------- | ----- |
-| R7.1 | Sliding-window rate limits, atomic via Redis Lua: per number, per account, per IP — three separate ceilings | MVP   |
+| R7.1 | Sliding-window rate limits, atomic via Redis Lua: per number, per account, per IP — three separate ceilings | V1    |
 | R7.2 | Plaintext codes never written to logs at any level, any environment                                         | MVP   |
 | R7.3 | Phone numbers hashed everywhere except the active verification record                                       | V1    |
 | R7.4 | API keys hashed at rest with argon2; a non-secret prefix identifies them                                    | V1    |

@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { insertAccount } from "@otp-router/db/repositories/accounts";
 import { insertVerification } from "@otp-router/db/repositories/verifications";
+import { SimulatedProvider } from "@otp-router/providers/simulated";
 import { buildApp } from "../../src/app.js";
 import { generateApiKey, hashApiKey } from "../../src/crypto/api-key.js";
 import { hmacHex } from "../../src/crypto/hmac.js";
@@ -27,6 +28,7 @@ const config = {
 
 let infra: Infra;
 let app: FastifyInstance;
+let provider: SimulatedProvider;
 let accountId: string;
 let apiKey: string;
 let otherApiKey: string;
@@ -51,7 +53,6 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await app.close();
   await infra.stop();
 });
 
@@ -59,7 +60,13 @@ beforeEach(async () => {
   await truncateAll(infra.pg);
   ({ accountId, apiKey } = await seedAccount("Acme"));
   ({ apiKey: otherApiKey } = await seedAccount("Other"));
-  app = await buildApp(config, infra.pg, infra.redis);
+  // Latency 0 keeps the 20x T1 rounds fast; a fresh instance per test isolates sentMessages.
+  provider = new SimulatedProvider({ latencyMs: 0 });
+  app = await buildApp(config, infra.pg, infra.redis, provider);
+});
+
+afterEach(async () => {
+  await app.close();
 });
 
 describe("verification lifecycle acceptance tests", () => {
@@ -69,30 +76,17 @@ describe("verification lifecycle acceptance tests", () => {
       method: "POST",
       url: "/v1/verification/start",
       headers: { authorization: `Bearer ${apiKey}` },
-      payload: { phone_number: "+919876543210", code_length: 4 },
+      payload: { phone_number: "+919876543210" },
     });
     expect(startRes.statusCode).toBe(202);
     const { verification_id: verificationId } = startRes.json();
 
-    const record = await infra.pg`
-      SELECT code_hmac FROM verifications WHERE id = ${verificationId}
-    `;
-    const row = record[0];
-    if (!row) {
-      throw new Error("verification row not found");
-    }
-    const codeHmac: string = row.code_hmac;
-    // The plaintext code never leaves the server (I4) — recover it only for this test's
-    // own assertion by brute-forcing the tiny fixed space, not by reading it back.
-    let code = "";
-    for (let candidate = 0; candidate < 10_000; candidate++) {
-      const attempt = candidate.toString().padStart(4, "0");
-      if (hmacHex(attempt, OTP_PEPPER) === codeHmac) {
-        code = attempt;
-        break;
-      }
-    }
-    expect(code).not.toBe("");
+    // I4: the plaintext code never leaves the server, so the only sanctioned way to
+    // recover it in a test is where a real integration would see it — the outbound
+    // message the provider was asked to send — never by reversing the stored hash.
+    expect(provider.sentMessages).toHaveLength(1);
+    const code = provider.sentMessages[0]?.code;
+    expect(code).toMatch(/^\d{6}$/);
 
     const checkRes = await app.inject({
       method: "POST",
@@ -156,6 +150,50 @@ describe("verification lifecycle acceptance tests", () => {
       payload: { verification_id: verification.id, code: "111111" },
     });
     expect(afterBurn.json().status).toBe("attempts_exceeded");
+  });
+
+  // A wrong code against an already-verified record must not behave any differently
+  // from a correct one — otherwise /check is a code-testing oracle for an attacker who
+  // already knows (or guesses) that a verification succeeded.
+  it("/check against an already-verified record ignores the submitted code entirely", async () => {
+    const verification = await insertVerification(infra.pg, {
+      id: "ver_already_verified",
+      accountId,
+      phoneHash: hmacHex("+919876543210", PHONE_HASH_PEPPER),
+      phoneEncrypted: encryptPhone("+919876543210", PHONE_ENCRYPTION_KEY),
+      codeHmac: hmacHex("222222", OTP_PEPPER),
+      expiresAt: new Date(Date.now() + 300_000),
+    });
+
+    const firstCheck = await app.inject({
+      method: "POST",
+      url: "/v1/verification/check",
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { verification_id: verification.id, code: "222222" },
+    });
+    expect(firstCheck.json().status).toBe("verified");
+
+    const wrongCodeRes = await app.inject({
+      method: "POST",
+      url: "/v1/verification/check",
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { verification_id: verification.id, code: "999999" },
+    });
+    const correctCodeRes = await app.inject({
+      method: "POST",
+      url: "/v1/verification/check",
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { verification_id: verification.id, code: "222222" },
+    });
+
+    expect(wrongCodeRes.statusCode).toBe(correctCodeRes.statusCode);
+    expect(wrongCodeRes.json()).toEqual(correctCodeRes.json());
+    expect(wrongCodeRes.json().status).toBe("already_verified");
+
+    const row = await infra.pg`
+      SELECT attempts_used FROM verifications WHERE id = ${verification.id}
+    `;
+    expect(row[0]?.attempts_used).toBe(0);
   });
 
   // T9: cross-tenant read attempt denied.

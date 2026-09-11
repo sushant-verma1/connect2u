@@ -1,5 +1,10 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import helmet from "@fastify/helmet";
+import {
+  serializerCompiler,
+  validatorCompiler,
+  type ZodTypeProvider,
+} from "fastify-type-provider-zod";
 import type { PgClient } from "@otp-router/db/client";
 import type { Provider } from "@otp-router/providers/provider";
 import { SimulatedProvider } from "@otp-router/providers/simulated";
@@ -20,7 +25,10 @@ export async function buildApp(
       level: config.logLevel,
       transport: config.nodeEnv === "development" ? { target: "pino-pretty" } : undefined,
     },
-  });
+  }).withTypeProvider<ZodTypeProvider>();
+
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
 
   await app.register(helmet);
   registerCorrelationId(app);

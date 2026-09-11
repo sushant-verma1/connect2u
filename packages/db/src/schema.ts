@@ -61,7 +61,7 @@ export const verifications = pgTable(
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
     verifiedChannel: text("verified_channel"),
     timeToVerifyMs: integer("time_to_verify_ms"),
-    metadataJson: jsonb("metadata_json").notNull().default({}),
+    metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default({}),
     idempotencyKey: text("idempotency_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
