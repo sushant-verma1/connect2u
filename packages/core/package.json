@@ -18,7 +18,8 @@
     "./routing/rank-by-score": "./src/routing/rank-by-score.ts",
     "./routing/apply-cost-ceiling": "./src/routing/apply-cost-ceiling.ts",
     "./routing/build-plan": "./src/routing/build-plan.ts",
-    "./routing/capability-update": "./src/routing/capability-update.ts"
+    "./routing/capability-update": "./src/routing/capability-update.ts",
+    "./fraud/daily-spend": "./src/fraud/daily-spend.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

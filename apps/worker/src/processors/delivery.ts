@@ -8,6 +8,7 @@ import {
   markDeliveryAttemptSent,
 } from "@otp-router/db/repositories/delivery-attempts";
 import { findApplicableRate } from "@otp-router/db/repositories/provider-rates";
+import { findAccountById } from "@otp-router/db/repositories/accounts";
 import {
   CHANNEL_TIMEOUT_MS,
   isChannel,
@@ -19,6 +20,7 @@ import { classifyCountry } from "@otp-router/core/pricing/country";
 import { isPermanentError, type Provider } from "@otp-router/providers/provider";
 import { advanceOrFail, type FallbackKeys } from "../services/fallback.js";
 import { updateCapabilityForOutcome } from "../services/capability.js";
+import { enforceDailySpendCeiling } from "../services/toll-fraud.js";
 
 /**
  * Whether bullmq will attempt this job again after the current run fails. Mirrors
@@ -108,6 +110,30 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
         country: rateParams.country,
       });
       log.info("delivery sent");
+
+      // R7.5: evaluated against spend that already happened (this send included), not
+      // spend about to happen — never blocks the send that tips the account over, only
+      // every send after it, once the account's status flip is visible (R8.1's
+      // apiKeyAuth cache bounds how long that takes). Its own try/catch, deliberately
+      // separate from the one below: a failure *here* is not a delivery failure — this
+      // send already succeeded — and must never be mistaken for one (which would wrongly
+      // mark a successful attempt failed, record a bogus capability failure, and
+      // advance the fallback chain on a channel that actually worked).
+      try {
+        const account = await findAccountById(pg, accountId);
+        if (account) {
+          await enforceDailySpendCeiling(
+            pg,
+            { accountId, dailyCostCapMicros: account.dailyCostCapMicros },
+            log,
+          );
+        }
+      } catch (fraudCheckErr) {
+        log.error(
+          { err: fraudCheckErr },
+          "R7.5 daily spend ceiling check failed — send already succeeded",
+        );
+      }
 
       // R4.2: the fallback timer is scheduled at send time, not at /start time — it
       // only exists once there's something to time out.

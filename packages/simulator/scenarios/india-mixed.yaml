@@ -1,0 +1,34 @@
+# R9.8 preset: steady-state Indian traffic, no channel in crisis. WhatsApp is the
+# default-first channel; SMS covers the share of numbers WhatsApp never reaches.
+# Read PROJECT.md's Definition of Done #1 before changing seed/verifications — the
+# resume numbers are measured against this file at seed 42.
+seed: 42
+verifications: 10000
+arrivalIntervalMs: 50
+
+population:
+  whatsappReachableShare: 0.72
+  abandonRate: 0.04
+  meanResponseDelayMs:
+    whatsapp: 7000
+    sms: 9000
+
+providers:
+  # rateMicros: apps/api/src/scripts/seed-provider-rates.ts's real India-corridor rate
+  # card, not invented numbers — WhatsApp is actually cheaper per send than SMS here.
+  whatsapp:
+    failureRate: 0.03
+    failureCode: provider_error
+    meanLatencyMs: 800
+    webhookChaosRate: 0.02
+    lateDeliveryRate: 0.05
+    lateDeliveryExtraMs: 4000
+    rateMicros: 115000
+  sms:
+    failureRate: 0.02
+    failureCode: provider_error
+    meanLatencyMs: 1500
+    webhookChaosRate: 0.01
+    lateDeliveryRate: 0.05
+    lateDeliveryExtraMs: 6000
+    rateMicros: 150000

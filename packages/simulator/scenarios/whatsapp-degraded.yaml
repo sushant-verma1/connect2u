@@ -1,0 +1,33 @@
+# R9.8 preset: same population as india-mixed, but WhatsApp's delivery side is having a
+# bad day — high send failures, high webhook loss, heavy late delivery. This is what
+# T5's fallback timer and Phase 5's outcome-scored routing exist for: the router should
+# visibly lean on SMS more than it does in india-mixed, without anyone touching the
+# policy by hand.
+seed: 42
+verifications: 10000
+arrivalIntervalMs: 50
+
+population:
+  whatsappReachableShare: 0.72
+  abandonRate: 0.04
+  meanResponseDelayMs:
+    whatsapp: 7000
+    sms: 9000
+
+providers:
+  whatsapp:
+    failureRate: 0.25
+    failureCode: provider_error
+    meanLatencyMs: 5000
+    webhookChaosRate: 0.15
+    lateDeliveryRate: 0.3
+    lateDeliveryExtraMs: 10000
+    rateMicros: 115000
+  sms:
+    failureRate: 0.02
+    failureCode: provider_error
+    meanLatencyMs: 1500
+    webhookChaosRate: 0.01
+    lateDeliveryRate: 0.05
+    lateDeliveryExtraMs: 6000
+    rateMicros: 150000

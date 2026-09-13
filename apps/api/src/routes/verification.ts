@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
+import type { Redis } from "ioredis";
 import { ulid } from "ulid";
 import { z } from "zod";
 import type { PgClient } from "@otp-router/db/client";
@@ -34,8 +35,14 @@ import { hmacHex } from "../crypto/hmac.js";
 import { hashPhone, normalizePhoneNumber } from "../crypto/phone.js";
 import { encryptPhone } from "../crypto/phone-encryption.js";
 import { checkVerification } from "../services/check-verification.js";
+import { checkStartRateLimits } from "../services/rate-limit.js";
+import { checkPrefixVelocity, recordAndCheckCountryMix } from "../services/fraud-signals.js";
+import { findReplayedStart } from "../services/idempotency.js";
+import { buildTrace } from "../services/trace.js";
 import type { Config } from "../config.js";
 import type { Queues } from "../queue/queues.js";
+
+const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
 const MAX_METADATA_BYTES = 4096;
 
@@ -86,6 +93,122 @@ const getResponseSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
+const traceParamsSchema = z.object({ id: z.string().min(1) });
+
+// R10.6: the trace view's whole payload — mirrors packages/core/src/routing/types.ts's
+// DecisionLogEntry shape exactly, since decisionLogJson is written straight from a
+// RoutingPlan and this is that same log read back.
+const decisionLogEntrySchema = z.object({
+  stage: z.enum(["match_policy", "capability_filter", "score_rank", "cost_ceiling"]),
+  action: z.enum(["considered", "skipped", "reordered", "chosen"]),
+  channel: z.string().optional(),
+  reason: z.string(),
+});
+
+const traceWebhookEventSchema = z.object({
+  provider: z.string(),
+  event_type: z.string(),
+  signature_valid: z.boolean().nullable(),
+  created_at: z.string(),
+});
+
+const traceAttemptSchema = z.object({
+  id: z.string(),
+  channel: z.string(),
+  provider: z.string(),
+  status: z.enum(["queued", "sent", "delivered", "failed", "timed_out"]),
+  error_code: z.string().nullable(),
+  cost_micros_at_send: z.number().nullable(),
+  sent_at: z.string().nullable(),
+  delivered_at: z.string().nullable(),
+  failed_at: z.string().nullable(),
+  timeout_at: z.string().nullable(),
+  webhook_events: z.array(traceWebhookEventSchema),
+});
+
+const traceResponseSchema = z.object({
+  verification_id: z.string(),
+  status: z.enum(["pending", "verified", "expired", "burned", "failed"]),
+  channel_chain: z.array(z.string()),
+  channel_timeouts_ms: z.record(z.number()),
+  attempts_used: z.number(),
+  max_attempts: z.number(),
+  created_at: z.string(),
+  expires_at: z.string(),
+  verified_at: z.string().nullable(),
+  verified_channel: z.string().nullable(),
+  time_to_verify_ms: z.number().nullable(),
+  routing_decision: z
+    .object({
+      considered: z.array(z.string()),
+      chosen_channel: z.string().nullable(),
+      decision_log: z.array(decisionLogEntrySchema),
+    })
+    .nullable(),
+  attempts: z.array(traceAttemptSchema),
+});
+
+type DecisionStage = "match_policy" | "capability_filter" | "score_rank" | "cost_ceiling";
+type DecisionAction = "considered" | "skipped" | "reordered" | "chosen";
+
+function isDecisionStage(value: string): value is DecisionStage {
+  return (
+    value === "match_policy" ||
+    value === "capability_filter" ||
+    value === "score_rank" ||
+    value === "cost_ceiling"
+  );
+}
+
+function isDecisionAction(value: string): value is DecisionAction {
+  return (
+    value === "considered" || value === "skipped" || value === "reordered" || value === "chosen"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export type ParsedDecisionLogEntry = Readonly<{
+  stage: DecisionStage;
+  action: DecisionAction;
+  channel?: string;
+  reason: string;
+}>;
+
+/**
+ * R10.6: `routing_decisions.decision_log_json` is typed `unknown` at the schema level
+ * (packages/db/src/schema.ts) — it's written straight from `RoutingPlan.decisionLog`
+ * (packages/core/src/routing/types.ts's `DecisionLogEntry[]`), but the trace endpoint
+ * narrows it field by field rather than asserting the type, the same way every other
+ * `unknown` webhook/JSON payload in this codebase gets narrowed (see
+ * `packages/providers/src/provider.ts`'s `isRecord`). A malformed entry is dropped, not
+ * thrown — a trace with one bad entry missing is more useful than a trace that 500s.
+ */
+function parseDecisionLog(raw: unknown): ParsedDecisionLogEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const entries: ParsedDecisionLogEntry[] = [];
+  for (const entry of raw) {
+    if (
+      isRecord(entry) &&
+      typeof entry.stage === "string" &&
+      isDecisionStage(entry.stage) &&
+      typeof entry.action === "string" &&
+      isDecisionAction(entry.action) &&
+      typeof entry.reason === "string"
+    ) {
+      entries.push({
+        stage: entry.stage,
+        action: entry.action,
+        channel: typeof entry.channel === "string" ? entry.channel : undefined,
+        reason: entry.reason,
+      });
+    }
+  }
+  return entries;
+}
+
 /** R3.2: RoutingInput.metadata is a flat string map — only the customer's string-valued
  * metadata fields are usable as match keys; a nested object or number can't be. */
 function stringMetadata(metadata: Record<string, unknown> | undefined): Record<string, string> {
@@ -127,6 +250,7 @@ async function loadProviderRates(
 export function registerVerificationRoutes(
   app: FastifyInstance,
   pg: PgClient,
+  redis: Redis,
   queues: Queues,
   apiKeyAuth: ApiKeyAuth,
   config: Config,
@@ -139,7 +263,13 @@ export function registerVerificationRoutes(
       preHandler: apiKeyAuth,
       schema: {
         body: startBodySchema,
-        response: { 202: startResponseSchema, 401: errorResponseSchema, 422: errorResponseSchema },
+        response: {
+          202: startResponseSchema,
+          401: errorResponseSchema,
+          403: errorResponseSchema,
+          422: errorResponseSchema,
+          429: errorResponseSchema,
+        },
       },
     },
     async (request, reply) => {
@@ -155,8 +285,56 @@ export function registerVerificationRoutes(
       }
 
       const phoneHash = hashPhone(normalizedPhone, config.phoneHashPepper);
+
+      // R1.1.6/T4: checked before any rate limiting or fraud signal — a replay is not
+      // a new request in any sense those exist to police, and re-running them against
+      // an already-completed call would double-count against the caller's own limits.
+      const idempotencyKey = request.headers[IDEMPOTENCY_KEY_HEADER];
+      if (typeof idempotencyKey === "string" && idempotencyKey.length > 0) {
+        const replayed = await findReplayedStart(pg, request.account.id, idempotencyKey);
+        if (replayed) {
+          return reply.code(202).send(replayed);
+        }
+      }
+
+      // R1.1.5/R1.1.7/R7.6/R7.7: independent Redis checks, run concurrently — three
+      // sequential round trips alone measured enough latency to blow /start's 100ms
+      // budget (R1.1.5), for no correctness benefit over running them together.
+      // Country-mix (R7.7) never rejects, so it just needs its own errors not to crash
+      // the request — it's genuinely fire-and-forget, unlike the other two.
       const country = classifyCountry(normalizedPhone);
       const metadata = stringMetadata(body.metadata);
+
+      const [breach, escalated] = await Promise.all([
+        checkStartRateLimits(redis, {
+          phoneHash,
+          accountId: request.account.id,
+          ip: request.ip,
+        }),
+        checkPrefixVelocity(
+          redis,
+          pg,
+          { accountId: request.account.id, phoneNumber: normalizedPhone },
+          request.log,
+        ),
+        recordAndCheckCountryMix(redis, request.account.id, country, request.log),
+      ]);
+
+      // R1.1.7/R7.1: number, account, and IP — three independent ceilings, checked
+      // before any further work so a request that's going to be rejected doesn't pay
+      // for routing lookups or a Postgres write first.
+      if (breach) {
+        const retryAfterSec = Math.max(1, Math.ceil(breach.retryAfterMs / 1000));
+        reply.header("Retry-After", String(retryAfterSec));
+        return reply.code(429).send({ error: `rate_limited_${breach.scope}` });
+      }
+
+      // R7.6: an account-level fraud signal — a breach both trips the account to
+      // manual_review (halting every later request too, once auth's cache sees it)
+      // and rejects this one outright.
+      if (escalated) {
+        return reply.code(403).send({ error: "account_under_review" });
+      }
 
       const routingInput: RoutingInput = {
         accountId: request.account.id,
@@ -193,20 +371,41 @@ export function registerVerificationRoutes(
       const expiresAt = new Date(Date.now() + body.ttl_seconds * 1000);
       const verificationId = `ver_${ulid()}`;
 
-      await insertVerification(pg, {
-        id: verificationId,
-        accountId: request.account.id,
-        phoneHash,
-        phoneEncrypted: encryptPhone(normalizedPhone, config.phoneEncryptionKey),
-        codeHmac: hmacHex(code, config.otpPepper),
-        // R2.3: encrypted, not hashed — this is what lets a later channel in the chain
-        // resend the exact same code (a fallback must never regenerate it).
-        codeEncrypted: encryptCode(code, config.codeEncryptionKey),
-        channelChain: [...plan.orderedChannels],
-        channelTimeoutsMs: { ...plan.timeouts },
-        expiresAt,
-        metadataJson: body.metadata ?? {},
-      });
+      try {
+        await insertVerification(pg, {
+          id: verificationId,
+          accountId: request.account.id,
+          phoneHash,
+          phoneEncrypted: encryptPhone(normalizedPhone, config.phoneEncryptionKey),
+          codeHmac: hmacHex(code, config.otpPepper),
+          // R2.3: encrypted, not hashed — this is what lets a later channel in the chain
+          // resend the exact same code (a fallback must never regenerate it).
+          codeEncrypted: encryptCode(code, config.codeEncryptionKey),
+          channelChain: [...plan.orderedChannels],
+          channelTimeoutsMs: { ...plan.timeouts },
+          expiresAt,
+          metadataJson: body.metadata ?? {},
+          idempotencyKey: typeof idempotencyKey === "string" ? idempotencyKey : null,
+        });
+      } catch (err) {
+        // R1.1.6/T4: two genuinely concurrent requests carrying the same Idempotency-Key
+        // both passed the lookup above before either had inserted — `postgres`
+        // surfaces Postgres's unique_violation as `code: "23505"` on the
+        // `verifications_account_idempotency_key_idx` constraint. The loser here isn't
+        // an error: it re-reads whichever row the winner just inserted and returns
+        // that exact response instead, so this request still sends nothing new.
+        const isUniqueViolation =
+          typeof idempotencyKey === "string" &&
+          err !== null &&
+          typeof err === "object" &&
+          "code" in err &&
+          err.code === "23505";
+        if (!isUniqueViolation) throw err;
+
+        const replayed = await findReplayedStart(pg, request.account.id, idempotencyKey);
+        if (!replayed) throw err;
+        return reply.code(202).send(replayed);
+      }
 
       // R3.9: persisted whole — every channel the policy proposed, the one chosen, and
       // the reason for every skip along the way.
@@ -322,6 +521,69 @@ export function registerVerificationRoutes(
         max_attempts: verification.maxAttempts,
         channel_verified: verification.verifiedChannel ?? undefined,
         metadata: verification.metadataJson,
+      });
+    },
+  );
+
+  // R10.6: the dashboard's trace screen — every attempt, every webhook, the routing
+  // decision, and the reason each channel was skipped, in one response. No live
+  // aggregation (that's R10.1's materialised-view screens); this is a targeted lookup
+  // by one verification_id, which stays cheap without one.
+  server.get(
+    "/v1/verification/:id/trace",
+    {
+      preHandler: apiKeyAuth,
+      schema: {
+        params: traceParamsSchema,
+        response: { 200: traceResponseSchema, 401: errorResponseSchema, 404: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const trace = await buildTrace(pg, { verificationId: id, accountId: request.account.id });
+      if (!trace) {
+        return reply.code(404).send({ error: "not_found" });
+      }
+
+      const { verification, routingDecision, attempts } = trace;
+
+      return reply.code(200).send({
+        verification_id: verification.id,
+        status: verification.status,
+        channel_chain: verification.channelChain,
+        channel_timeouts_ms: verification.channelTimeoutsMs,
+        attempts_used: verification.attemptsUsed,
+        max_attempts: verification.maxAttempts,
+        created_at: verification.createdAt.toISOString(),
+        expires_at: verification.expiresAt.toISOString(),
+        verified_at: verification.verifiedAt?.toISOString() ?? null,
+        verified_channel: verification.verifiedChannel,
+        time_to_verify_ms: verification.timeToVerifyMs,
+        routing_decision: routingDecision
+          ? {
+              considered: [...routingDecision.consideredJson],
+              chosen_channel: routingDecision.chosenChannel,
+              decision_log: parseDecisionLog(routingDecision.decisionLogJson),
+            }
+          : null,
+        attempts: attempts.map((attempt) => ({
+          id: attempt.id,
+          channel: attempt.channel,
+          provider: attempt.provider,
+          status: attempt.status,
+          error_code: attempt.errorCode,
+          cost_micros_at_send: attempt.costMicrosAtSend,
+          sent_at: attempt.sentAt?.toISOString() ?? null,
+          delivered_at: attempt.deliveredAt?.toISOString() ?? null,
+          failed_at: attempt.failedAt?.toISOString() ?? null,
+          timeout_at: attempt.timeoutAt?.toISOString() ?? null,
+          webhook_events: attempt.webhookEvents.map((event) => ({
+            provider: event.provider,
+            event_type: event.eventType,
+            signature_valid: event.signatureValid,
+            created_at: event.createdAt.toISOString(),
+          })),
+        })),
       });
     },
   );

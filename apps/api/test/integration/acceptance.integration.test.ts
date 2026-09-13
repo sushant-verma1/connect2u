@@ -43,6 +43,7 @@ const config = {
   apiKeyPepper: API_KEY_PEPPER,
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
+  dashboardOrigin: "http://localhost:5173",
 };
 const keys = { phoneEncryptionKey: PHONE_ENCRYPTION_KEY, codeEncryptionKey: CODE_ENCRYPTION_KEY };
 
@@ -82,7 +83,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await truncateAll(infra.pg);
+  await truncateAll(infra.pg, infra.redis);
   ({ accountId, apiKey } = await seedAccount("Acme"));
   ({ apiKey: otherApiKey } = await seedAccount("Other"));
   // Latency 0 keeps the 20x T1 rounds fast; a fresh instance per test isolates sentMessages.

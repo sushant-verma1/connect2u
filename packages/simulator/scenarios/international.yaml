@@ -1,0 +1,37 @@
+# Scenario run (not one of R9.8's three presets): identical population, failure,
+# latency, and webhook-chaos parameters as india-mixed.yaml — the only thing that
+# changes is the rate card, swapped to Meta/generic-SMS's international corridor
+# (apps/api/src/scripts/seed-provider-rates.ts). Built to test whether outcome-scored
+# routing's cost advantage over a fixed WhatsApp-first chain widens when a wasted first
+# attempt costs more in absolute terms.
+seed: 42
+verifications: 10000
+arrivalIntervalMs: 50
+
+population:
+  whatsappReachableShare: 0.72
+  abandonRate: 0.04
+  meanResponseDelayMs:
+    whatsapp: 7000
+    sms: 9000
+
+providers:
+  # rateMicros: the INTL row of the same rate card india-mixed.yaml uses the IN row
+  # of — WhatsApp remains the cheaper channel per send in both corridors (₹2.00 vs
+  # ₹3.50 here), just ~17x more expensive in absolute terms than the IN corridor.
+  whatsapp:
+    failureRate: 0.03
+    failureCode: provider_error
+    meanLatencyMs: 800
+    webhookChaosRate: 0.02
+    lateDeliveryRate: 0.05
+    lateDeliveryExtraMs: 4000
+    rateMicros: 2000000
+  sms:
+    failureRate: 0.02
+    failureCode: provider_error
+    meanLatencyMs: 1500
+    webhookChaosRate: 0.01
+    lateDeliveryRate: 0.05
+    lateDeliveryExtraMs: 6000
+    rateMicros: 3500000

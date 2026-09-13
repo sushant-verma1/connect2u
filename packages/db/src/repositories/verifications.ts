@@ -19,6 +19,29 @@ export async function insertVerification(
   return inserted;
 }
 
+/**
+ * R1.1.6/T4: the replay lookup. Scoped by account_id (R8.1/R8.2) and backed by
+ * `verifications_account_idempotency_key_idx` — a concurrent duplicate `/start` racing
+ * this same lookup either wins the unique-index insert or loses it, so the caller
+ * (verification.ts) can safely fall back to this same query on a unique-violation catch
+ * instead of double-sending.
+ */
+export async function findVerificationByIdempotencyKey(
+  client: PgClient,
+  accountId: string,
+  idempotencyKey: string,
+): Promise<Verification | null> {
+  const db = drizzle(client);
+  const rows = await db
+    .select()
+    .from(verifications)
+    .where(
+      and(eq(verifications.accountId, accountId), eq(verifications.idempotencyKey, idempotencyKey)),
+    )
+    .limit(1);
+  return rows[0] ?? null;
+}
+
 /** R8.1/R8.2: every read is scoped by account_id, no exceptions. */
 export async function findVerificationScoped(
   client: PgClient,

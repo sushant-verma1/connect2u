@@ -1,10 +1,49 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import type { PgClient } from "../client.js";
 import { deliveryAttempts } from "../schema.js";
 
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;
 export type NewDeliveryAttempt = typeof deliveryAttempts.$inferInsert;
+
+export type SpendSummary = Readonly<{ knownMicros: number; unpricedCount: number }>;
+
+/**
+ * R7.5/G8: today's spend for this account, split into what's known and how many sends
+ * had no `cost_micros_at_send` at all — `packages/core/src/fraud/daily-spend.ts` is the
+ * one place that decides what an unpriced send counts as, deliberately not here, so the
+ * SQL stays a plain aggregate and never quietly folds a NULL into the SUM as a 0.
+ * Scoped on `sent_at` (a send actually happened), not `status`, since status moves on
+ * to delivered/failed/timed_out while `cost_micros_at_send` stays put.
+ */
+export async function sumTodaySpendForAccount(
+  client: PgClient,
+  accountId: string,
+): Promise<SpendSummary> {
+  const db = drizzle(client);
+  const startOfDayUtc = new Date();
+  startOfDayUtc.setUTCHours(0, 0, 0, 0);
+
+  const rows = await db
+    .select({
+      knownMicros: sql<string>`coalesce(sum(${deliveryAttempts.costMicrosAtSend}), 0)`,
+      unpricedCount: sql<string>`count(*) filter (where ${deliveryAttempts.costMicrosAtSend} is null)`,
+    })
+    .from(deliveryAttempts)
+    .where(
+      and(
+        eq(deliveryAttempts.accountId, accountId),
+        isNotNull(deliveryAttempts.sentAt),
+        gte(deliveryAttempts.sentAt, startOfDayUtc),
+      ),
+    );
+
+  const row = rows[0];
+  return {
+    knownMicros: Number(row?.knownMicros ?? 0),
+    unpricedCount: Number(row?.unpricedCount ?? 0),
+  };
+}
 
 export async function insertDeliveryAttempt(
   client: PgClient,
@@ -28,6 +67,9 @@ export async function findDeliveryAttempt(
   return rows[0] ?? null;
 }
 
+/** R10.6: `id` is a ULID (`att_${ulid()}`) — lexicographically sortable by creation
+ * time, so ordering by it gives the trace view chronological order with no separate
+ * `created_at` column needed. */
 export async function findDeliveryAttemptsByVerification(
   client: PgClient,
   verificationId: string,
@@ -36,7 +78,8 @@ export async function findDeliveryAttemptsByVerification(
   return db
     .select()
     .from(deliveryAttempts)
-    .where(eq(deliveryAttempts.verificationId, verificationId));
+    .where(eq(deliveryAttempts.verificationId, verificationId))
+    .orderBy(deliveryAttempts.id);
 }
 
 /** R6.2: how an inbound webhook finds the attempt it's reporting on. */

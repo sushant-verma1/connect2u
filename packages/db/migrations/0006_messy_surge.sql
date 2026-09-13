@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "verifications_account_idempotency_key_idx" ON "verifications" USING btree ("account_id","idempotency_key") WHERE "verifications"."idempotency_key" is not null;

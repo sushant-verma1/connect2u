@@ -15,6 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "pnpm -r --if-present test",
+    "simulate": "pnpm --filter @otp-router/simulator simulate",
     "prepare": "husky"
   },
   "devDependencies": {

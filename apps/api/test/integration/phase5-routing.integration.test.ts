@@ -48,6 +48,7 @@ const config = {
   apiKeyPepper: API_KEY_PEPPER,
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
+  dashboardOrigin: "http://localhost:5173",
 };
 
 let infra: Infra;
@@ -80,7 +81,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await truncateAll(infra.pg);
+  await truncateAll(infra.pg, infra.redis);
   ({ apiKey } = await seedAccount("Acme"));
   bullConnection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
   queues = createQueues(bullConnection);

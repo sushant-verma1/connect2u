@@ -49,6 +49,11 @@ const envSchema = z.object({
   TWILIO_FROM_NUMBER: z.string().optional(),
 
   DEMO_RECIPIENT_NUMBER: z.string().optional(),
+
+  // Phase 8: the dashboard is a separate origin (Vite dev server) reading this API
+  // directly (ARCHITECTURE.md — no BFF), so it needs an explicit CORS allowance.
+  // Defaults to Vite's own default port rather than a wildcard.
+  DASHBOARD_ORIGIN: z.string().url().default("http://localhost:5173"),
 });
 
 export type Config = Readonly<{
@@ -67,6 +72,7 @@ export type Config = Readonly<{
   metaAppSecret?: string;
   metaWebhookVerifyToken?: string;
   metaTemplateName?: string;
+  dashboardOrigin: string;
 }>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -95,5 +101,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     metaAppSecret: data.META_APP_SECRET,
     metaWebhookVerifyToken: data.META_WEBHOOK_VERIFY_TOKEN,
     metaTemplateName: data.META_TEMPLATE_NAME,
+    dashboardOrigin: data.DASHBOARD_ORIGIN,
   };
 }

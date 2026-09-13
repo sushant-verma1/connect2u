@@ -50,9 +50,19 @@ export async function startInfra(): Promise<Infra> {
   };
 }
 
-export async function truncateAll(pg: PgClient): Promise<void> {
-  await pg`TRUNCATE TABLE
-    webhook_events, delivery_attempts, verifications, accounts,
-    routing_policies, channel_capability, channel_scores, routing_decisions, provider_rates
-    CASCADE`;
+/**
+ * Phase 7's rate limits and fraud signals (rate-limit.ts, fraud-signals.ts) live in
+ * Redis, not Postgres, and carry real TTLs that outlive a single test — without this,
+ * every test file that calls `/start` against the same handful of synthetic phone
+ * numbers across several `it` blocks (most of them do) can spuriously trip a *later*
+ * test's rate limit with counters a completely unrelated *earlier* test left behind.
+ */
+export async function truncateAll(pg: PgClient, redis: Redis): Promise<void> {
+  await Promise.all([
+    pg`TRUNCATE TABLE
+      webhook_events, delivery_attempts, verifications, accounts,
+      routing_policies, channel_capability, channel_scores, routing_decisions, provider_rates
+      CASCADE`,
+    redis.flushdb(),
+  ]);
 }

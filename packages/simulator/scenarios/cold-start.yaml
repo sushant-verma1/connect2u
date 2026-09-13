@@ -1,0 +1,38 @@
+# R9.8 preset / Phase 6 exit gate: a small pool of returning numbers (200), each
+# verifying roughly 25 times over the run, so the router's per-phone-hash capability
+# cache (packages/core/src/routing/capability-update.ts) actually has repeat evidence to
+# warm on. 30% of these numbers can never actually receive a WhatsApp delivery
+# (whatsappBrokenShare) — a genuinely learnable, repeatable signal, unlike
+# whatsappReachableShare's "delivered but unused" gap (see population.ts), which
+# capability filtering can't see. Watch the router learn, for each broken number, to
+# stop wasting the first fallback slot on WhatsApp after a couple of failed attempts.
+seed: 42
+verifications: 5000
+arrivalIntervalMs: 50
+uniquePhoneNumbers: 200
+# Isolates the per-number capability effect this preset exists to demonstrate from the
+# country-wide score-rank stage, which would otherwise reorder everyone onto SMS within
+# the first few hundred verifications and mask the slower, per-number warm-up.
+disableScoreRanking: true
+
+population:
+  whatsappReachableShare: 0.9
+  abandonRate: 0.02
+  whatsappBrokenShare: 0.3
+  meanResponseDelayMs:
+    whatsapp: 6000
+    sms: 8000
+
+providers:
+  whatsapp:
+    failureRate: 0.02
+    failureCode: provider_error
+    meanLatencyMs: 800
+    webhookChaosRate: 0.01
+    rateMicros: 115000
+  sms:
+    failureRate: 0.01
+    failureCode: provider_error
+    meanLatencyMs: 1500
+    webhookChaosRate: 0.01
+    rateMicros: 150000

@@ -1,6 +1,9 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
+import swagger from "@fastify/swagger";
 import {
+  jsonSchemaTransform,
   serializerCompiler,
   validatorCompiler,
   type ZodTypeProvider,
@@ -39,13 +42,28 @@ export async function buildApp(
   app.addHook("onClose", () => closeQueues(queues));
 
   await app.register(helmet);
+  // Phase 8: the dashboard (a separate Vite origin) reads this API directly — no BFF
+  // (ARCHITECTURE.md). Scoped to one configured origin, not `*`, since every route
+  // here is Bearer-authenticated and a wildcard origin would let any page in a user's
+  // browser replay a stolen key's requests cross-origin.
+  await app.register(cors, { origin: config.dashboardOrigin });
+  // The spec is generated from the same Zod schemas every route already validates
+  // against (`transform: jsonSchemaTransform`) — there is no second, hand-maintained
+  // description of the API to drift out of sync with the actual routes.
+  await app.register(swagger, {
+    openapi: {
+      info: { title: "otp-router", version: "0.0.0" },
+    },
+    transform: jsonSchemaTransform,
+  });
+  app.get("/openapi.json", { schema: { hide: true } }, async () => app.swagger());
   registerCorrelationId(app);
   registerHealthRoutes(app, pg, redis);
 
   // Shared across every route group so the auth cache (api-key-auth.ts) actually pays
   // off instead of each route group re-verifying the same key on its own miss.
   const apiKeyAuth = createApiKeyAuth(pg, config.apiKeyPepper);
-  registerVerificationRoutes(app, pg, queues, apiKeyAuth, config);
+  registerVerificationRoutes(app, pg, redis, queues, apiKeyAuth, config);
   registerDeadLetterRoutes(app, queues.deadLetterQueue, apiKeyAuth);
   registerWebhookRoutes(app, queues.webhookIngestQueue);
   registerRoutingPolicyRoutes(app, pg, apiKeyAuth);

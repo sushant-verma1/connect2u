@@ -91,6 +91,14 @@ export const verifications = pgTable(
     index("verifications_pending_idx")
       .on(table.status)
       .where(sql`${table.status} = 'pending'`),
+    // R1.1.6/T4: a permanent binding, not a 24h one — R1.1.6 promises a replay works
+    // "within 24h"; binding the key forever is a strictly safer superset of that (it
+    // can only ever replay for *longer* than promised) and avoids the alternative of a
+    // time-windowed uniqueness constraint racing a concurrent replay right at the
+    // boundary. The 24h language describes the guaranteed minimum, not a hard expiry.
+    uniqueIndex("verifications_account_idempotency_key_idx")
+      .on(table.accountId, table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} is not null`),
   ],
 );
 

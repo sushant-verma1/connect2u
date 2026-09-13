@@ -1,3 +1,4 @@
+import { inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import type { PgClient } from "../client.js";
 import { webhookEvents } from "../schema.js";
@@ -18,4 +19,23 @@ export async function insertWebhookEventIfNew(
   const db = drizzle(client);
   const rows = await db.insert(webhookEvents).values(data).onConflictDoNothing().returning();
   return rows[0] ?? null;
+}
+
+/**
+ * R10.6: `webhook_events` has no `verification_id` of its own (it's keyed on
+ * `(provider, provider_message_id)`, R6.2) — the trace endpoint gets there by first
+ * reading this verification's delivery_attempts' provider_message_ids, then looking up
+ * every webhook event against that set in one query.
+ */
+export async function findWebhookEventsByProviderMessageIds(
+  client: PgClient,
+  providerMessageIds: readonly string[],
+): Promise<WebhookEvent[]> {
+  if (providerMessageIds.length === 0) return [];
+  const db = drizzle(client);
+  return db
+    .select()
+    .from(webhookEvents)
+    .where(inArray(webhookEvents.providerMessageId, [...providerMessageIds]))
+    .orderBy(webhookEvents.createdAt);
 }

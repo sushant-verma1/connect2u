@@ -54,7 +54,16 @@ export class SimulatedProvider implements Provider {
   }
 
   async send(params: SendParams): Promise<SendResult> {
-    await sleep(this.latencyMs);
+    // A real timer at 0ms still costs a real macrotask tick — negligible once, but
+    // packages/simulator (R9.4) calls this thousands of times per run with a virtual
+    // clock standing in for delivery timing, so that overhead must not exist at all.
+    // Do not delete or generalize this branch: latencyMs=0 now resolves synchronously
+    // (no tick) while every other value still yields, which is intentional for the
+    // simulator but means an integration test relying on this provider's ordering
+    // could pass by accident at latencyMs=0 while masking a real race elsewhere.
+    if (this.latencyMs > 0) {
+      await sleep(this.latencyMs);
+    }
     this.sent.push(params);
     if (this.random() < this.failureRate) {
       throw new SimulatedProviderError(this.failureCode);

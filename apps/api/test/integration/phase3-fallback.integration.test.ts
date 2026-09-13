@@ -36,6 +36,7 @@ const config = {
   apiKeyPepper: API_KEY_PEPPER,
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
+  dashboardOrigin: "http://localhost:5173",
 };
 
 const logger = pino({ level: "silent" });
@@ -121,7 +122,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await truncateAll(infra.pg);
+  await truncateAll(infra.pg, infra.redis);
   ({ accountId, apiKey } = await seedAccount("Acme"));
   // Separate connections for the app's own queues vs. the worker-side queues used to
   // build the processors below — mirrors production, where these are two different
