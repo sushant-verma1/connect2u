@@ -70,6 +70,7 @@ const bullBoard =
           queues.scoreRecomputeQueue,
         ],
         config.workerPort,
+        provider,
       )
     : null;
 

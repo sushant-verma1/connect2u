@@ -1,5 +1,5 @@
 import { createPgClient } from "@otp-router/db/client";
-import { insertProviderRate } from "@otp-router/db/repositories/provider-rates";
+import { upsertProviderRate } from "@otp-router/db/repositories/provider-rates";
 import { loadConfig } from "../config.js";
 
 /**
@@ -22,8 +22,11 @@ const RATE_CARD = [
 const config = loadConfig();
 const pg = createPgClient(config.databaseUrl);
 
+// Reference data with deterministic IDs (`rate_<effectiveFrom>_<index>`) — re-running
+// this script (README's local setup and deploy sequence both call for it) must be a
+// no-op on the second run, not a primary-key violation.
 for (const [i, rate] of RATE_CARD.entries()) {
-  await insertProviderRate(pg, {
+  await upsertProviderRate(pg, {
     id: `rate_${EFFECTIVE_FROM.getTime()}_${i}`,
     messageType: "authentication",
     currency: "INR",

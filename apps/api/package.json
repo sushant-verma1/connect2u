@@ -9,9 +9,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "seed": "tsx src/scripts/seed.ts",
-    "seed:rates": "tsx src/scripts/seed-provider-rates.ts",
-    "send:hello-world": "tsx src/scripts/send-meta-hello-world.ts"
+    "seed": "tsx --env-file=../../.env src/scripts/seed.ts",
+    "seed:rates": "tsx --env-file=../../.env src/scripts/seed-provider-rates.ts",
+    "send:hello-world": "tsx --env-file=../../.env src/scripts/send-meta-hello-world.ts"
   },
   "dependencies": {
     "@bull-board/api": "^9.10.0",

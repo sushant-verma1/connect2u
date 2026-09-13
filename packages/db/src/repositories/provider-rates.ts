@@ -20,6 +20,17 @@ export async function insertProviderRate(
 }
 
 /**
+ * For seeding a fixed rate card with deterministic IDs (`seed-provider-rates.ts`):
+ * that data never changes, so re-running the seed — which the README's local setup
+ * and deploy sequence both call for — must be a no-op on the second run, not a
+ * primary-key violation.
+ */
+export async function upsertProviderRate(client: PgClient, data: NewProviderRate): Promise<void> {
+  const db = drizzle(client);
+  await db.insert(providerRates).values(data).onConflictDoNothing();
+}
+
+/**
  * G8: the rate in effect *at send time* — the most recent row whose `effective_from`
  * has already passed. A rate-card update never rewrites what an already-sent attempt
  * cost; it only changes what the next lookup returns.

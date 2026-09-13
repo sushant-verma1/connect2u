@@ -21,7 +21,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx src/run-migrate.ts"
+    "db:migrate": "tsx --env-file=../../.env src/run-migrate.ts"
   },
   "dependencies": {
     "@otp-router/core": "workspace:*",

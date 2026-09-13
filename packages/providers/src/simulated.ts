@@ -35,12 +35,14 @@ const defaultRandom = (): number => randomInt(0, 1_000_000) / 1_000_000;
  * place a real WhatsApp/SMS sandbox would let you inspect an outbound message, not by
  * reconstructing them from the stored hash.
  */
+type SentMessage = SendParams & { providerMessageId: string | null };
+
 export class SimulatedProvider implements Provider {
   private readonly latencyMs: number;
   private readonly failureRate: number;
   private readonly failureCode: ProviderError["code"];
   private readonly random: () => number;
-  private readonly sent: SendParams[] = [];
+  private readonly sent: SentMessage[] = [];
 
   constructor(options: SimulatedProviderOptions = {}) {
     this.latencyMs = options.latencyMs ?? 50;
@@ -50,6 +52,16 @@ export class SimulatedProvider implements Provider {
   }
 
   get sentMessages(): readonly SendParams[] {
+    return this.sent.map(({ phoneNumber, code, channel }) => ({ phoneNumber, code, channel }));
+  }
+
+  /**
+   * Same records as `sentMessages`, plus the `providerMessageId` each successful send
+   * got back — the identifier `POST /v1/webhooks/simulated` needs to resolve a
+   * `delivered` event to an attempt. `sentMessages` stays narrow (I4's sanctioned way
+   * to read a code in a test) rather than growing this field onto it.
+   */
+  get sentWithProviderIds(): readonly SentMessage[] {
     return this.sent;
   }
 
@@ -64,11 +76,13 @@ export class SimulatedProvider implements Provider {
     if (this.latencyMs > 0) {
       await sleep(this.latencyMs);
     }
-    this.sent.push(params);
     if (this.random() < this.failureRate) {
+      this.sent.push({ ...params, providerMessageId: null });
       throw new SimulatedProviderError(this.failureCode);
     }
-    return { providerMessageId: `sim_${randomInt(0, 1_000_000_000).toString(36)}` };
+    const providerMessageId = `sim_${randomInt(0, 1_000_000_000).toString(36)}`;
+    this.sent.push({ ...params, providerMessageId });
+    return { providerMessageId };
   }
 
   // No signature scheme exists to simulate — R6.1 doesn't apply to a fake channel with
