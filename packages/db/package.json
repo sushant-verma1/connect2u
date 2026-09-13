@@ -9,7 +9,9 @@
     "./migrate": "./src/migrate.ts",
     "./repositories/accounts": "./src/repositories/accounts.ts",
     "./repositories/verifications": "./src/repositories/verifications.ts",
-    "./repositories/delivery-attempts": "./src/repositories/delivery-attempts.ts"
+    "./repositories/delivery-attempts": "./src/repositories/delivery-attempts.ts",
+    "./repositories/webhook-events": "./src/repositories/webhook-events.ts",
+    "./repositories/provider-rates": "./src/repositories/provider-rates.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

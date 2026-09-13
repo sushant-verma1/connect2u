@@ -5,8 +5,9 @@ const IV_LENGTH = 12;
 
 /**
  * R7.3: the active verification record is the one place the real phone number is
- * recoverable at rest. AES-256-GCM, distinct key from the HMAC peppers (I1-adjacent —
- * reversible encryption and one-way hashing must never share key material).
+ * recoverable at rest. AES-256-GCM, distinct key from the HMAC peppers and from
+ * `CODE_ENCRYPTION_KEY` (I1-adjacent — reversible encryption and one-way hashing must
+ * never share key material, and neither should two unrelated reversible fields).
  * Stored as base64(iv || authTag || ciphertext).
  */
 export function encryptPhone(e164: string, keyBase64: string): string {

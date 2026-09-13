@@ -1,18 +1,36 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import type { Worker } from "bullmq";
+import { Redis } from "ioredis";
+import { pino } from "pino";
 import { insertAccount } from "@otp-router/db/repositories/accounts";
 import { insertVerification } from "@otp-router/db/repositories/verifications";
 import { SimulatedProvider } from "@otp-router/providers/simulated";
+import { createDeliveryWorker } from "@otp-router/worker/queue/delivery-worker";
+import { createQueues } from "@otp-router/worker/queue/queues";
 import { buildApp } from "../../src/app.js";
 import { generateApiKey, hashApiKey } from "../../src/crypto/api-key.js";
 import { hmacHex } from "../../src/crypto/hmac.js";
+import { encryptCode } from "../../src/crypto/code-encryption.js";
 import { encryptPhone } from "../../src/crypto/phone-encryption.js";
 import { startInfra, truncateAll, type Infra } from "./harness.js";
+
+/** Delivery is async now (R1.1.5) — tests poll instead of asserting immediately after /start. */
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("waitFor: condition not met within timeout");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 const OTP_PEPPER = "test-otp-pepper";
 const PHONE_HASH_PEPPER = "test-phone-hash-pepper";
 const API_KEY_PEPPER = "test-api-key-pepper";
 const PHONE_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
+const CODE_ENCRYPTION_KEY = Buffer.alloc(32, 10).toString("base64");
 
 const config = {
   nodeEnv: "test" as const,
@@ -24,10 +42,14 @@ const config = {
   phoneHashPepper: PHONE_HASH_PEPPER,
   apiKeyPepper: API_KEY_PEPPER,
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
+  codeEncryptionKey: CODE_ENCRYPTION_KEY,
 };
+const keys = { phoneEncryptionKey: PHONE_ENCRYPTION_KEY, codeEncryptionKey: CODE_ENCRYPTION_KEY };
 
 let infra: Infra;
+let bullConnection: Redis;
 let app: FastifyInstance;
+let worker: Worker;
 let provider: SimulatedProvider;
 let accountId: string;
 let apiKey: string;
@@ -53,7 +75,10 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  await infra.stop();
+  // Guard against beforeAll having thrown (e.g. Docker isn't running) — infra is
+  // never assigned, and calling infra.stop() would report a confusing second
+  // failure on top of the real one.
+  await infra?.stop();
 });
 
 beforeEach(async () => {
@@ -62,11 +87,23 @@ beforeEach(async () => {
   ({ apiKey: otherApiKey } = await seedAccount("Other"));
   // Latency 0 keeps the 20x T1 rounds fast; a fresh instance per test isolates sentMessages.
   provider = new SimulatedProvider({ latencyMs: 0 });
-  app = await buildApp(config, infra.pg, infra.redis, provider);
+  bullConnection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
+  const queues = createQueues(bullConnection);
+  worker = createDeliveryWorker(
+    bullConnection,
+    infra.pg,
+    provider,
+    pino({ level: "silent" }),
+    queues,
+    keys,
+  );
+  app = await buildApp(config, infra.pg, infra.redis, bullConnection);
 });
 
 afterEach(async () => {
   await app.close();
+  await worker.close();
+  bullConnection.disconnect();
 });
 
 describe("verification lifecycle acceptance tests", () => {
@@ -84,7 +121,8 @@ describe("verification lifecycle acceptance tests", () => {
     // I4: the plaintext code never leaves the server, so the only sanctioned way to
     // recover it in a test is where a real integration would see it — the outbound
     // message the provider was asked to send — never by reversing the stored hash.
-    expect(provider.sentMessages).toHaveLength(1);
+    // Delivery is async (R1.1.5) — wait for the worker to process the enqueued job.
+    await waitFor(() => provider.sentMessages.length === 1);
     const code = provider.sentMessages[0]?.code;
     expect(code).toMatch(/^\d{6}$/);
 
@@ -106,6 +144,7 @@ describe("verification lifecycle acceptance tests", () => {
       phoneHash: hmacHex("+919876543210", PHONE_HASH_PEPPER),
       phoneEncrypted: encryptPhone("+919876543210", PHONE_ENCRYPTION_KEY),
       codeHmac: hmacHex("111111", OTP_PEPPER),
+      codeEncrypted: encryptCode("111111", CODE_ENCRYPTION_KEY),
       expiresAt: new Date(Date.now() - 1000),
     });
 
@@ -126,6 +165,7 @@ describe("verification lifecycle acceptance tests", () => {
       phoneHash: hmacHex("+919876543210", PHONE_HASH_PEPPER),
       phoneEncrypted: encryptPhone("+919876543210", PHONE_ENCRYPTION_KEY),
       codeHmac: hmacHex("111111", OTP_PEPPER),
+      codeEncrypted: encryptCode("111111", CODE_ENCRYPTION_KEY),
       expiresAt: new Date(Date.now() + 300_000),
     });
 
@@ -162,6 +202,7 @@ describe("verification lifecycle acceptance tests", () => {
       phoneHash: hmacHex("+919876543210", PHONE_HASH_PEPPER),
       phoneEncrypted: encryptPhone("+919876543210", PHONE_ENCRYPTION_KEY),
       codeHmac: hmacHex("222222", OTP_PEPPER),
+      codeEncrypted: encryptCode("222222", CODE_ENCRYPTION_KEY),
       expiresAt: new Date(Date.now() + 300_000),
     });
 
@@ -204,6 +245,7 @@ describe("verification lifecycle acceptance tests", () => {
       phoneHash: hmacHex("+919876543210", PHONE_HASH_PEPPER),
       phoneEncrypted: encryptPhone("+919876543210", PHONE_ENCRYPTION_KEY),
       codeHmac: hmacHex("111111", OTP_PEPPER),
+      codeEncrypted: encryptCode("111111", CODE_ENCRYPTION_KEY),
       expiresAt: new Date(Date.now() + 300_000),
     });
 
@@ -236,6 +278,7 @@ describe("verification lifecycle acceptance tests", () => {
         phoneHash: hmacHex("+919876543210", PHONE_HASH_PEPPER),
         phoneEncrypted: encryptPhone("+919876543210", PHONE_ENCRYPTION_KEY),
         codeHmac: hmacHex("654321", OTP_PEPPER),
+        codeEncrypted: encryptCode("654321", CODE_ENCRYPTION_KEY),
         expiresAt: new Date(Date.now() + 300_000),
       });
 

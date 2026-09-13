@@ -1,16 +1,26 @@
 import { randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Provider, SendParams, SendResult } from "./provider.js";
+import {
+  isRecord,
+  providerErrorCode,
+  type ParsedWebhookEvent,
+  type Provider,
+  type ProviderError,
+  type SendParams,
+  type SendResult,
+} from "./provider.js";
 
 export class SimulatedProviderError extends Error {
-  constructor(public readonly code: "provider_error") {
-    super("SimulatedProvider: simulated send failure");
+  constructor(public readonly code: ProviderError["code"]) {
+    super(`SimulatedProvider: simulated send failure (${code})`);
   }
 }
 
 export type SimulatedProviderOptions = Readonly<{
   latencyMs?: number;
   failureRate?: number;
+  /** R5.6: which taxonomy code a simulated failure reports. Defaults to the transient case. */
+  failureCode?: ProviderError["code"];
   /** Injectable so the simulator (R9.3) can thread a seeded PRNG through instead of I6-forbidden Math.random. */
   random?: () => number;
 }>;
@@ -28,12 +38,14 @@ const defaultRandom = (): number => randomInt(0, 1_000_000) / 1_000_000;
 export class SimulatedProvider implements Provider {
   private readonly latencyMs: number;
   private readonly failureRate: number;
+  private readonly failureCode: ProviderError["code"];
   private readonly random: () => number;
   private readonly sent: SendParams[] = [];
 
   constructor(options: SimulatedProviderOptions = {}) {
     this.latencyMs = options.latencyMs ?? 50;
     this.failureRate = options.failureRate ?? 0;
+    this.failureCode = options.failureCode ?? "provider_error";
     this.random = options.random ?? defaultRandom;
   }
 
@@ -45,8 +57,31 @@ export class SimulatedProvider implements Provider {
     await sleep(this.latencyMs);
     this.sent.push(params);
     if (this.random() < this.failureRate) {
-      throw new SimulatedProviderError("provider_error");
+      throw new SimulatedProviderError(this.failureCode);
     }
     return { providerMessageId: `sim_${randomInt(0, 1_000_000_000).toString(36)}` };
+  }
+
+  // No signature scheme exists to simulate — R6.1 doesn't apply to a fake channel with
+  // no wire format of its own; `/v1/webhooks/simulated` never calls this.
+  verifySignature(): boolean {
+    return true;
+  }
+
+  parseWebhook(body: unknown): readonly ParsedWebhookEvent[] {
+    if (
+      !isRecord(body) ||
+      typeof body.provider_message_id !== "string" ||
+      typeof body.event_type !== "string"
+    ) {
+      return [];
+    }
+    return [
+      { providerMessageId: body.provider_message_id, eventType: body.event_type, payload: body },
+    ];
+  }
+
+  mapErrorCode(err: unknown): ProviderError["code"] {
+    return providerErrorCode(err);
   }
 }

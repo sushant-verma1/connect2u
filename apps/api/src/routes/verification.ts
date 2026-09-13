@@ -7,19 +7,23 @@ import {
   insertVerification,
   findVerificationScoped,
 } from "@otp-router/db/repositories/verifications";
-import { insertDeliveryAttempt } from "@otp-router/db/repositories/delivery-attempts";
-import type { Provider } from "@otp-router/providers/provider";
+import {
+  findDeliveryAttemptsByVerification,
+  insertDeliveryAttempt,
+} from "@otp-router/db/repositories/delivery-attempts";
 import { CHECK_OUTCOMES } from "@otp-router/core/state-machine/check-outcome";
-import { createApiKeyAuth } from "../auth/api-key-auth.js";
+import { buildChannelChain } from "@otp-router/core/fallback/channel-chain";
+import { fallbackTimerJobId } from "@otp-router/core/queue/fallback-job";
+import type { ApiKeyAuth } from "../auth/api-key-auth.js";
+import { encryptCode } from "../crypto/code-encryption.js";
 import { generateCode } from "../crypto/code.js";
 import { hmacHex } from "../crypto/hmac.js";
 import { hashPhone, normalizePhoneNumber } from "../crypto/phone.js";
 import { encryptPhone } from "../crypto/phone-encryption.js";
 import { checkVerification } from "../services/check-verification.js";
 import type { Config } from "../config.js";
+import type { Queues } from "../queue/queues.js";
 
-// Phase 1 sends on a single fixed channel — the routing engine (R3) arrives in Phase 5.
-const CHANNEL = "whatsapp" as const;
 const MAX_METADATA_BYTES = 4096;
 
 const startBodySchema = z.object({
@@ -34,7 +38,7 @@ const startBodySchema = z.object({
 const startResponseSchema = z.object({
   verification_id: z.string(),
   status: z.literal("pending"),
-  channel_attempted: z.literal(CHANNEL),
+  channel_attempted: z.enum(["whatsapp", "sms"]),
   expires_at: z.string(),
 });
 
@@ -72,11 +76,11 @@ const getResponseSchema = z.object({
 export function registerVerificationRoutes(
   app: FastifyInstance,
   pg: PgClient,
-  provider: Provider,
+  queues: Queues,
+  apiKeyAuth: ApiKeyAuth,
   config: Config,
 ): void {
   const server = app.withTypeProvider<ZodTypeProvider>();
-  const apiKeyAuth = createApiKeyAuth(pg, config.apiKeyPepper);
 
   server.post(
     "/v1/verification/start",
@@ -84,7 +88,7 @@ export function registerVerificationRoutes(
       preHandler: apiKeyAuth,
       schema: {
         body: startBodySchema,
-        response: { 202: startResponseSchema, 422: errorResponseSchema },
+        response: { 202: startResponseSchema, 401: errorResponseSchema, 422: errorResponseSchema },
       },
     },
     async (request, reply) => {
@@ -102,6 +106,12 @@ export function registerVerificationRoutes(
       const code = generateCode(body.code_length);
       const expiresAt = new Date(Date.now() + body.ttl_seconds * 1000);
       const verificationId = `ver_${ulid()}`;
+      // R4.7: the ordered, capped chain this verification will fall back through.
+      const channelChain = buildChannelChain(body.channels);
+      const firstChannel = channelChain[0];
+      if (!firstChannel) {
+        return reply.code(422).send({ error: "no_channel_available" });
+      }
 
       await insertVerification(pg, {
         id: verificationId,
@@ -109,46 +119,44 @@ export function registerVerificationRoutes(
         phoneHash: hashPhone(normalizedPhone, config.phoneHashPepper),
         phoneEncrypted: encryptPhone(normalizedPhone, config.phoneEncryptionKey),
         codeHmac: hmacHex(code, config.otpPepper),
+        // R2.3: encrypted, not hashed — this is what lets a later channel in the chain
+        // resend the exact same code (a fallback must never regenerate it).
+        codeEncrypted: encryptCode(code, config.codeEncryptionKey),
+        channelChain: [...channelChain],
         expiresAt,
         metadataJson: body.metadata ?? {},
       });
 
       const attemptId = `att_${ulid()}`;
-      try {
-        const sendResult = await provider.send({
+      await insertDeliveryAttempt(pg, {
+        id: attemptId,
+        verificationId,
+        accountId: request.account.id,
+        channel: firstChannel,
+        provider: "simulated",
+        status: "queued",
+      });
+
+      // R1.1.5: the API never calls a provider — it only enqueues. `jobId: attemptId`
+      // makes re-enqueueing the same attempt a no-op instead of a duplicate job.
+      await queues.deliveryQueue.add(
+        "send",
+        {
+          attemptId,
+          verificationId,
+          accountId: request.account.id,
           phoneNumber: normalizedPhone,
           code,
-          channel: CHANNEL,
-        });
-        await insertDeliveryAttempt(pg, {
-          id: attemptId,
-          verificationId,
-          accountId: request.account.id,
-          channel: CHANNEL,
-          provider: "simulated",
-          providerMessageId: sendResult.providerMessageId,
-          status: "sent",
-          sentAt: new Date(),
-        });
-      } catch {
-        // R5.6 / I4: the failure is recorded, never thrown back to the caller — fallback
-        // logic lands in Phase 3. /start still returns 202; delivery is best-effort here.
-        await insertDeliveryAttempt(pg, {
-          id: attemptId,
-          verificationId,
-          accountId: request.account.id,
-          channel: CHANNEL,
-          provider: "simulated",
-          status: "failed",
-          errorCode: "provider_error",
-          failedAt: new Date(),
-        });
-      }
+          channel: firstChannel,
+          correlationId: request.correlationId,
+        },
+        { jobId: attemptId },
+      );
 
       return reply.code(202).send({
         verification_id: verificationId,
         status: "pending",
-        channel_attempted: CHANNEL,
+        channel_attempted: firstChannel,
         expires_at: expiresAt.toISOString(),
       });
     },
@@ -158,7 +166,10 @@ export function registerVerificationRoutes(
     "/v1/verification/check",
     {
       preHandler: apiKeyAuth,
-      schema: { body: checkBodySchema, response: { 200: checkResponseSchema } },
+      schema: {
+        body: checkBodySchema,
+        response: { 200: checkResponseSchema, 401: errorResponseSchema },
+      },
     },
     async (request, reply) => {
       const body = request.body;
@@ -169,6 +180,17 @@ export function registerVerificationRoutes(
         code: body.code,
         otpPepper: config.otpPepper,
       });
+
+      // R1.2.4: on success, cancel every pending fallback timer for this verification.
+      // Best-effort (ARCHITECTURE.md §6) — the timer processor's own conditional
+      // UPDATE (R4.3/I9) is what actually guarantees correctness if this misses or a
+      // timer already fired.
+      if (result.outcome === "verified") {
+        const attempts = await findDeliveryAttemptsByVerification(pg, body.verification_id);
+        await Promise.all(
+          attempts.map((attempt) => queues.fallbackQueue.remove(fallbackTimerJobId(attempt.id))),
+        );
+      }
 
       return reply.code(200).send({
         verification_id: body.verification_id,
@@ -186,7 +208,7 @@ export function registerVerificationRoutes(
       preHandler: apiKeyAuth,
       schema: {
         params: getParamsSchema,
-        response: { 200: getResponseSchema, 404: errorResponseSchema },
+        response: { 200: getResponseSchema, 401: errorResponseSchema, 404: errorResponseSchema },
       },
     },
     async (request, reply) => {

@@ -109,3 +109,29 @@ export async function markExpired(
     .returning();
   return rows[0] ?? null;
 }
+
+/**
+ * State machine terminal transition "all channels exhausted" (ARCHITECTURE.md §3).
+ * Same atomic-conditional-UPDATE shape as every other transition here — a verification
+ * that already left `pending` (verified, expired, burned, or already failed) is left
+ * alone, which is what makes this safe to call from a fallback path that may race a
+ * `/check` call.
+ */
+export async function markFailed(
+  client: PgClient,
+  params: { id: string; accountId: string },
+): Promise<Verification | null> {
+  const db = drizzle(client);
+  const rows = await db
+    .update(verifications)
+    .set({ status: "failed" })
+    .where(
+      and(
+        eq(verifications.id, params.id),
+        eq(verifications.accountId, params.accountId),
+        eq(verifications.status, "pending"),
+      ),
+    )
+    .returning();
+  return rows[0] ?? null;
+}

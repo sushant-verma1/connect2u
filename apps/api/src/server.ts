@@ -6,8 +6,12 @@ import { buildApp } from "./app.js";
 const config = loadConfig();
 const pg = createPgClient(config.databaseUrl);
 const redis = new Redis(config.redisUrl, { lazyConnect: true });
+// BullMQ requires its own connection with maxRetriesPerRequest: null — kept separate
+// from the general-purpose `redis` client used for the /ready check. No `lazyConnect`:
+// bullmq drives this connection's lifecycle itself as soon as a Queue is constructed.
+const bullConnection = new Redis(config.redisUrl, { maxRetriesPerRequest: null });
 
-const app = await buildApp(config, pg, redis);
+const app = await buildApp(config, pg, redis, bullConnection);
 
 await redis.connect();
 
@@ -22,6 +26,7 @@ async function shutdown(): Promise<void> {
   await app.close();
   await pg.end();
   redis.disconnect();
+  bullConnection.disconnect();
   process.exit(0);
 }
 

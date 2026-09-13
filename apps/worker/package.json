@@ -3,13 +3,43 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "build": "tsc -p tsconfig.json"
+  "exports": {
+    "./queue/queues": "./src/queue/queues.ts",
+    "./queue/delivery-worker": "./src/queue/delivery-worker.ts",
+    "./queue/fallback-worker": "./src/queue/fallback-worker.ts",
+    "./queue/webhook-worker": "./src/queue/webhook-worker.ts",
+    "./processors/delivery": "./src/processors/delivery.ts",
+    "./processors/fallback-timer": "./src/processors/fallback-timer.ts",
+    "./processors/webhook-ingest": "./src/processors/webhook-ingest.ts",
+    "./services/fallback": "./src/services/fallback.ts"
   },
-  "dependencies": {},
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bull-board/api": "^9.10.0",
+    "@bull-board/fastify": "^9.10.0",
+    "@otp-router/core": "workspace:*",
+    "@otp-router/db": "workspace:*",
+    "@otp-router/providers": "workspace:*",
+    "bullmq": "^6.3.4",
+    "fastify": "^5.6.2",
+    "ioredis": "^5.4.1",
+    "pino": "^9.5.0",
+    "ulid": "^2.3.0",
+    "zod": "^3.23.8"
+  },
   "devDependencies": {
+    "@testcontainers/postgresql": "^12.1.0",
+    "@testcontainers/redis": "^12.1.0",
     "@types/node": "^22.9.0",
-    "typescript": "^5.6.3"
+    "pino-pretty": "^11.3.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
   }
 }

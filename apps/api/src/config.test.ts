@@ -11,6 +11,7 @@ const validEnv = {
   PHONE_HASH_PEPPER: "phone-pepper",
   API_KEY_PEPPER: "api-key-pepper",
   PHONE_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
+  CODE_ENCRYPTION_KEY: Buffer.alloc(32, 8).toString("base64"),
 };
 
 describe("loadConfig", () => {
@@ -33,5 +34,10 @@ describe("loadConfig", () => {
   it("fails fast when PHONE_ENCRYPTION_KEY is not 32 bytes", () => {
     const badEnv = { ...validEnv, PHONE_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") };
     expect(() => loadConfig(badEnv)).toThrow(/PHONE_ENCRYPTION_KEY/);
+  });
+
+  it("fails fast when CODE_ENCRYPTION_KEY is not 32 bytes", () => {
+    const badEnv = { ...validEnv, CODE_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") };
+    expect(() => loadConfig(badEnv)).toThrow(/CODE_ENCRYPTION_KEY/);
   });
 });

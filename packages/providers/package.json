@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     "./provider": "./src/provider.ts",
-    "./simulated": "./src/simulated.ts"
+    "./simulated": "./src/simulated.ts",
+    "./meta": "./src/meta.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./state-machine/check-outcome": "./src/state-machine/check-outcome.ts"
+    "./state-machine/check-outcome": "./src/state-machine/check-outcome.ts",
+    "./queue/delivery-job": "./src/queue/delivery-job.ts",
+    "./queue/fallback-job": "./src/queue/fallback-job.ts",
+    "./queue/webhook-job": "./src/queue/webhook-job.ts",
+    "./fallback/channel-chain": "./src/fallback/channel-chain.ts",
+    "./pricing/country": "./src/pricing/country.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "dev": "pnpm --filter @otp-router/api dev",
+    "dev": "pnpm --parallel --filter @otp-router/api --filter @otp-router/worker dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
