@@ -6,7 +6,11 @@ import {
   findDeliveryAttemptsByVerification,
   insertDeliveryAttempt,
 } from "@otp-router/db/repositories/delivery-attempts";
-import { isChannel, nextChannel } from "@otp-router/core/fallback/channel-chain";
+import {
+  CHANNEL_TIMEOUT_MS,
+  isChannel,
+  nextChannel,
+} from "@otp-router/core/fallback/channel-chain";
 import type { DeliveryJobData } from "@otp-router/core/queue/delivery-job";
 import { decryptString } from "../crypto/aes-gcm.js";
 
@@ -61,6 +65,11 @@ export async function advanceOrFail(
     status: "queued",
   });
 
+  // R4.5: the same per-channel timeout the routing plan computed at /start time —
+  // re-read from the verification row, never a global constant. Falls back to the
+  // fixed constant only for rows from before this column existed.
+  const timeoutMs = verification.channelTimeoutsMs[channel] ?? CHANNEL_TIMEOUT_MS[channel];
+
   await deliveryQueue.add(
     "send",
     {
@@ -71,6 +80,7 @@ export async function advanceOrFail(
       code,
       channel,
       correlationId: params.correlationId,
+      timeoutMs,
     },
     { jobId: attemptId },
   );

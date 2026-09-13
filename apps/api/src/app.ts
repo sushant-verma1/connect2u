@@ -15,6 +15,7 @@ import { closeQueues, createQueues } from "./queue/queues.js";
 import { registerDeadLetterRoutes } from "./routes/dead-letters.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerMetaWebhookRoutes } from "./routes/meta-webhook.js";
+import { registerRoutingPolicyRoutes } from "./routes/routing-policy.js";
 import { registerVerificationRoutes } from "./routes/verification.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
 
@@ -47,6 +48,7 @@ export async function buildApp(
   registerVerificationRoutes(app, pg, queues, apiKeyAuth, config);
   registerDeadLetterRoutes(app, queues.deadLetterQueue, apiKeyAuth);
   registerWebhookRoutes(app, queues.webhookIngestQueue);
+  registerRoutingPolicyRoutes(app, pg, apiKeyAuth);
 
   // Only registered once Meta credentials exist — there's nothing to verify a
   // signature against otherwise, and an unconfigured webhook endpoint is worse than a

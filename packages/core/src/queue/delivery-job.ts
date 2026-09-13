@@ -12,6 +12,10 @@ export type DeliveryJobData = Readonly<{
   code: string;
   channel: "whatsapp" | "sms";
   correlationId: string;
+  // R4.5: the timeout the routing pipeline computed for this channel at /start time
+  // (or that advanceOrFail re-read from the verification row on fallback) — never a
+  // global constant. See apps/worker/src/processors/delivery.ts.
+  timeoutMs: number;
 }>;
 
 // Sanitised record for the dead-letter inspection endpoint — deliberately excludes

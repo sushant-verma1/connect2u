@@ -12,6 +12,7 @@ import type { DeliveryJobData } from "@otp-router/core/queue/delivery-job";
 import { fallbackTimerJobId, type FallbackTimerJobData } from "@otp-router/core/queue/fallback-job";
 import type { WebhookIngestJobData } from "@otp-router/core/queue/webhook-job";
 import { advanceOrFail, type FallbackKeys } from "../services/fallback.js";
+import { updateCapabilityForOutcome } from "../services/capability.js";
 
 /**
  * R6.2/T6: dedupe is the `webhook_events` unique index, not this code — a duplicate
@@ -57,6 +58,17 @@ export function createWebhookIngestProcessor(
       const delivered = await markDeliveryAttemptDelivered(pg, { id: attempt.id });
       if (delivered) {
         await fallbackQueue.remove(fallbackTimerJobId(attempt.id));
+        // R3.6: the channel actually delivered for this number — a success signal.
+        await updateCapabilityForOutcome(
+          pg,
+          {
+            verificationId: attempt.verificationId,
+            accountId: attempt.accountId,
+            channel: attempt.channel,
+          },
+          "success",
+          new Date(),
+        );
       }
       return;
     }
@@ -73,6 +85,17 @@ export function createWebhookIngestProcessor(
       }
 
       await fallbackQueue.remove(fallbackTimerJobId(attempt.id));
+      // R3.6: the channel reported a delivery failure for this number.
+      await updateCapabilityForOutcome(
+        pg,
+        {
+          verificationId: attempt.verificationId,
+          accountId: attempt.accountId,
+          channel: attempt.channel,
+        },
+        "failure",
+        new Date(),
+      );
       await advanceOrFail(pg, deliveryQueue, keys, {
         verificationId: attempt.verificationId,
         accountId: attempt.accountId,

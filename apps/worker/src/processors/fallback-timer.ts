@@ -5,6 +5,7 @@ import { markDeliveryAttemptTimedOut } from "@otp-router/db/repositories/deliver
 import type { DeliveryJobData } from "@otp-router/core/queue/delivery-job";
 import type { FallbackTimerJobData } from "@otp-router/core/queue/fallback-job";
 import { advanceOrFail, type FallbackKeys } from "../services/fallback.js";
+import { updateCapabilityForOutcome } from "../services/capability.js";
 
 /**
  * R4.4 trigger #3 (timeout). This job always fires at T+timeout regardless of what
@@ -30,6 +31,13 @@ export function createFallbackTimerProcessor(
     }
 
     log.info({ channel }, "delivery timed out — advancing fallback chain");
+    // R3.6: no delivery confirmation ever arrived — a failure signal for this channel.
+    await updateCapabilityForOutcome(
+      pg,
+      { verificationId, accountId, channel },
+      "failure",
+      new Date(),
+    );
     await advanceOrFail(pg, deliveryQueue, keys, { verificationId, accountId, correlationId });
   };
 }

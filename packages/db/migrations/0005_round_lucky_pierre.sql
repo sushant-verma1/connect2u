@@ -1,0 +1,1 @@
+ALTER TABLE "verifications" ADD COLUMN "channel_timeouts_ms" jsonb DEFAULT '{}'::jsonb NOT NULL;

@@ -8,15 +8,26 @@
     "./queue/delivery-job": "./src/queue/delivery-job.ts",
     "./queue/fallback-job": "./src/queue/fallback-job.ts",
     "./queue/webhook-job": "./src/queue/webhook-job.ts",
+    "./queue/score-recompute-job": "./src/queue/score-recompute-job.ts",
     "./fallback/channel-chain": "./src/fallback/channel-chain.ts",
-    "./pricing/country": "./src/pricing/country.ts"
+    "./pricing/country": "./src/pricing/country.ts",
+    "./routing/policy": "./src/routing/policy.ts",
+    "./routing/types": "./src/routing/types.ts",
+    "./routing/match-policy": "./src/routing/match-policy.ts",
+    "./routing/filter-by-capability": "./src/routing/filter-by-capability.ts",
+    "./routing/rank-by-score": "./src/routing/rank-by-score.ts",
+    "./routing/apply-cost-ceiling": "./src/routing/apply-cost-ceiling.ts",
+    "./routing/build-plan": "./src/routing/build-plan.ts",
+    "./routing/capability-update": "./src/routing/capability-update.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
-  "dependencies": {},
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
   "devDependencies": {
     "typescript": "^5.6.3",
     "vitest": "^2.1.5"

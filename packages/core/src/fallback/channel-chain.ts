@@ -1,6 +1,10 @@
-export type Channel = "whatsapp" | "sms";
+// The single source of truth for which channels exist — routing/policy.ts's Zod enum
+// and everything else that needs "every known channel" derive from this array.
+export const CHANNELS = ["whatsapp", "sms"] as const;
 
-const CHANNEL_SET: ReadonlySet<string> = new Set<Channel>(["whatsapp", "sms"]);
+export type Channel = (typeof CHANNELS)[number];
+
+const CHANNEL_SET: ReadonlySet<string> = new Set<Channel>(CHANNELS);
 
 /** Narrows a value loaded from storage (e.g. a jsonb column typed as `string[]`). */
 export function isChannel(value: string): value is Channel {

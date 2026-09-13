@@ -170,6 +170,10 @@ importers:
         version: 2.1.9(@types/node@22.20.2)
 
   packages/core:
+    dependencies:
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       typescript:
         specifier: ^5.6.3
@@ -180,6 +184,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@otp-router/core':
+        specifier: workspace:*
+        version: link:../core
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(postgres@3.4.9)

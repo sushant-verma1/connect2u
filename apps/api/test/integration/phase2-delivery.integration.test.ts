@@ -313,14 +313,26 @@ describe("Phase 2 — async delivery", () => {
     );
 
     try {
+      // Phase 5: routing owns the channel list now — a customer's `channels` in the
+      // /start body only *filters* the policy's proposed set (matchPolicy.ts), it no
+      // longer supplies the raw (possibly duplicate-heavy) list directly. To exercise
+      // the cap, the duplicates have to live in the policy itself.
+      await app.inject({
+        method: "PUT",
+        url: "/v1/accounts/me/routing-policy",
+        headers: { authorization: `Bearer ${apiKey}` },
+        payload: {
+          version: 1,
+          rules: [],
+          default: { channels: ["whatsapp", "sms", "whatsapp", "sms", "whatsapp"] },
+        },
+      });
+
       const startRes = await app.inject({
         method: "POST",
         url: "/v1/verification/start",
         headers: { authorization: `Bearer ${apiKey}` },
-        payload: {
-          phone_number: "+919876543210",
-          channels: ["whatsapp", "sms", "whatsapp", "sms", "whatsapp"],
-        },
+        payload: { phone_number: "+919876543210" },
       });
       const { verification_id: verificationId } = startRes.json();
 

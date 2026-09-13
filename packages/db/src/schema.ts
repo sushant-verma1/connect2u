@@ -2,11 +2,13 @@ import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  doublePrecision,
   index,
   integer,
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -62,9 +64,17 @@ export const verifications = pgTable(
     // process; `code_hmac` alone can't be reversed to get it back.
     codeEncrypted: text("code_encrypted").notNull(),
     // R4.7: the ordered channels this verification will try, capped at
-    // MAX_FALLBACK_CHANNELS. Fixed at /start time — Phase 5's routing policy replaces
-    // this with a per-account computed chain.
+    // MAX_FALLBACK_CHANNELS. Computed once at /start time by the routing pipeline
+    // (packages/core/src/routing/build-plan.ts) and fixed for this verification's
+    // lifetime — a later policy change never reaches into an in-flight verification.
     channelChain: jsonb("channel_chain").$type<string[]>().notNull().default([]),
+    // R4.5: per-channel timeouts the same routing plan computed, keyed by channel —
+    // never a global constant. Read by both the initial send (verification.ts) and
+    // every fallback advance (apps/worker/src/services/fallback.ts).
+    channelTimeoutsMs: jsonb("channel_timeouts_ms")
+      .$type<Record<string, number>>()
+      .notNull()
+      .default({}),
     status: verificationStatus("status").notNull().default("pending"),
     attemptsUsed: integer("attempts_used").notNull().default(0),
     maxAttempts: integer("max_attempts").notNull().default(5),
@@ -99,6 +109,10 @@ export const deliveryAttempts = pgTable(
     providerMessageId: text("provider_message_id"),
     status: deliveryStatus("status").notNull().default("queued"),
     errorCode: text("error_code"),
+    // R3.7: the same two-bucket classification G8's cost lookup uses (packages/core's
+    // classifyCountry), written once at send time — score-recompute (channel-scores.ts)
+    // groups on this, not a live phone-number parse.
+    country: text("country"),
     // I8 / G8: the rate applicable at send time, never looked up later.
     costMicrosAtSend: bigint("cost_micros_at_send", { mode: "number" }),
     sentAt: timestamp("sent_at", { withTimezone: true }),
@@ -166,4 +180,93 @@ export const providerRates = pgTable(
       table.effectiveFrom,
     ),
   ],
+);
+
+// R3.1/R3.3: declarative, versioned, per-account. Changing routing behaviour is a PUT,
+// not a deploy — the API reads whichever row is `active` at request time.
+export const routingPolicies = pgTable(
+  "routing_policies",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    version: integer("version").notNull(),
+    // Validated against packages/core/src/routing/policy.ts's Zod schema before it
+    // ever reaches here — this column trusts the caller already checked shape.
+    policyJson: jsonb("policy_json").$type<Record<string, unknown>>().notNull(),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("routing_policies_account_id_idx").on(table.accountId),
+    // At most one active policy per account — the PUT handler deactivates the previous
+    // one in the same transaction that activates the new one.
+    uniqueIndex("routing_policies_account_active_idx")
+      .on(table.accountId)
+      .where(sql`${table.active} = true`),
+  ],
+);
+
+// R3.5/R3.6: keyed on phone_hash — never plaintext. One row per (number, channel) this
+// system has ever tried; confidence decays with age, updated on every delivery outcome.
+export const channelCapability = pgTable(
+  "channel_capability",
+  {
+    phoneHash: text("phone_hash").notNull(),
+    channel: text("channel").notNull(),
+    capability: text("capability").notNull().default("unknown"),
+    confidence: doublePrecision("confidence").notNull().default(0.5),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.phoneHash, table.channel] })],
+);
+
+// R3.7/R3.8: precomputed by the score-recompute job (never at request time) — verification
+// rate, not delivery rate, per (channel, country, carrier_class).
+export const channelScores = pgTable(
+  "channel_scores",
+  {
+    id: text("id").primaryKey(),
+    channel: text("channel").notNull(),
+    country: text("country").notNull(),
+    // No carrier-detection signal exists yet (out of scope) — every row is "unknown"
+    // until that lands, which keeps the column real without faking data it doesn't have.
+    carrierClass: text("carrier_class").notNull().default("unknown"),
+    verificationRate: doublePrecision("verification_rate").notNull(),
+    p50Ms: integer("p50_ms").notNull(),
+    p95Ms: integer("p95_ms").notNull(),
+    costPerSuccessMicros: bigint("cost_per_success_micros", { mode: "number" }),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    windowEnd: timestamp("window_end", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    // rank-by-score.ts always wants the newest window for a (channel, country, carrier_class).
+    index("channel_scores_lookup_idx").on(
+      table.channel,
+      table.country,
+      table.carrierClass,
+      table.windowEnd,
+    ),
+  ],
+);
+
+// R3.9: every routing decision persists whole — every channel considered, the one
+// chosen, and the reason for every skip. This is what the dashboard's trace view (R10.6)
+// renders.
+export const routingDecisions = pgTable(
+  "routing_decisions",
+  {
+    id: text("id").primaryKey(),
+    verificationId: text("verification_id")
+      .notNull()
+      .references(() => verifications.id),
+    consideredJson: jsonb("considered_json").$type<readonly string[]>().notNull(),
+    chosenChannel: text("chosen_channel"),
+    decisionLogJson: jsonb("decision_log_json").$type<unknown>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("routing_decisions_verification_id_idx").on(table.verificationId)],
 );

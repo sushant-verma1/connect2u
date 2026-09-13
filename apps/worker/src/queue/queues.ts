@@ -14,12 +14,17 @@ import {
   WEBHOOK_INGEST_QUEUE_NAME,
   type WebhookIngestJobData,
 } from "@otp-router/core/queue/webhook-job";
+import {
+  SCORE_RECOMPUTE_QUEUE_NAME,
+  type ScoreRecomputeJobData,
+} from "@otp-router/core/queue/score-recompute-job";
 
 export type Queues = Readonly<{
   deliveryQueue: Queue<DeliveryJobData>;
   deadLetterQueue: Queue<DeadLetterRecord>;
   fallbackQueue: Queue<FallbackTimerJobData>;
   webhookIngestQueue: Queue<WebhookIngestJobData>;
+  scoreRecomputeQueue: Queue<ScoreRecomputeJobData>;
 }>;
 
 /**
@@ -34,6 +39,9 @@ export function createQueues(connection: Redis): Queues {
     deadLetterQueue: new Queue<DeadLetterRecord>(DELIVERY_DLQ_NAME, { connection }),
     fallbackQueue: new Queue<FallbackTimerJobData>(FALLBACK_TIMER_QUEUE_NAME, { connection }),
     webhookIngestQueue: new Queue<WebhookIngestJobData>(WEBHOOK_INGEST_QUEUE_NAME, { connection }),
+    scoreRecomputeQueue: new Queue<ScoreRecomputeJobData>(SCORE_RECOMPUTE_QUEUE_NAME, {
+      connection,
+    }),
   };
 }
 
@@ -43,5 +51,6 @@ export async function closeQueues(queues: Queues): Promise<void> {
     queues.deadLetterQueue.close(),
     queues.fallbackQueue.close(),
     queues.webhookIngestQueue.close(),
+    queues.scoreRecomputeQueue.close(),
   ]);
 }

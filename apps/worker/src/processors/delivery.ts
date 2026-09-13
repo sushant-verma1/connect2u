@@ -18,6 +18,7 @@ import { fallbackTimerJobId, type FallbackTimerJobData } from "@otp-router/core/
 import { classifyCountry } from "@otp-router/core/pricing/country";
 import { isPermanentError, type Provider } from "@otp-router/providers/provider";
 import { advanceOrFail, type FallbackKeys } from "../services/fallback.js";
+import { updateCapabilityForOutcome } from "../services/capability.js";
 
 /**
  * Whether bullmq will attempt this job again after the current run fails. Mirrors
@@ -36,8 +37,11 @@ export type DeliveryProcessorDeps = Readonly<{
   deliveryQueue: Queue<DeliveryJobData>;
   fallbackQueue: Queue<FallbackTimerJobData>;
   keys: FallbackKeys;
-  // Overridable for tests only — production always uses ARCHITECTURE.md §4's values.
-  channelTimeoutMs?: Readonly<Record<Channel, number>>;
+  // Overridable for tests only — production always uses `job.data.timeoutMs`, the
+  // per-channel value the routing pipeline computed at /start time (R4.5), never a
+  // global constant. This escape hatch exists purely so race tests can run on a
+  // deterministic, fast clock instead of waiting out real 20s/30s timeouts.
+  channelTimeoutMs?: Readonly<Partial<Record<Channel, number>>>;
 }>;
 
 /**
@@ -55,12 +59,20 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
     deliveryQueue,
     fallbackQueue,
     keys,
-    channelTimeoutMs = CHANNEL_TIMEOUT_MS,
+    channelTimeoutMs,
   } = deps;
 
   return async function processDelivery(job: Job<DeliveryJobData>): Promise<void> {
-    const { attemptId, verificationId, accountId, phoneNumber, code, channel, correlationId } =
-      job.data;
+    const {
+      attemptId,
+      verificationId,
+      accountId,
+      phoneNumber,
+      code,
+      channel,
+      correlationId,
+      timeoutMs,
+    } = job.data;
     const log = logger.child({ correlationId, attemptId, verificationId });
 
     const existing = await findDeliveryAttempt(pg, attemptId);
@@ -93,16 +105,18 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
         id: attemptId,
         providerMessageId: result.providerMessageId,
         costMicrosAtSend: rate?.rateMicros,
+        country: rateParams.country,
       });
       log.info("delivery sent");
 
       // R4.2: the fallback timer is scheduled at send time, not at /start time — it
       // only exists once there's something to time out.
       if (isChannel(channel)) {
+        const delay = channelTimeoutMs?.[channel] ?? timeoutMs ?? CHANNEL_TIMEOUT_MS[channel];
         await fallbackQueue.add(
           "timeout",
           { attemptId, verificationId, accountId, channel, correlationId },
-          { delay: channelTimeoutMs[channel], jobId: fallbackTimerJobId(attemptId) },
+          { delay, jobId: fallbackTimerJobId(attemptId) },
         );
       }
     } catch (err) {
@@ -123,6 +137,13 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
           failedAt: new Date().toISOString(),
           correlationId,
         });
+        // R3.6: the send itself never succeeded on this channel for this number.
+        await updateCapabilityForOutcome(
+          pg,
+          { verificationId, accountId, channel },
+          "failure",
+          new Date(),
+        );
         // R4.4 trigger #1: a hard provider error — permanent, or transient with
         // retries exhausted — advances the fallback chain immediately rather than
         // waiting for a timer that was never scheduled (the send never succeeded).

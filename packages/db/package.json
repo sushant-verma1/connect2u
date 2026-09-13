@@ -11,7 +11,11 @@
     "./repositories/verifications": "./src/repositories/verifications.ts",
     "./repositories/delivery-attempts": "./src/repositories/delivery-attempts.ts",
     "./repositories/webhook-events": "./src/repositories/webhook-events.ts",
-    "./repositories/provider-rates": "./src/repositories/provider-rates.ts"
+    "./repositories/provider-rates": "./src/repositories/provider-rates.ts",
+    "./repositories/routing-policies": "./src/repositories/routing-policies.ts",
+    "./repositories/channel-capability": "./src/repositories/channel-capability.ts",
+    "./repositories/channel-scores": "./src/repositories/channel-scores.ts",
+    "./repositories/routing-decisions": "./src/repositories/routing-decisions.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -20,6 +24,7 @@
     "db:migrate": "tsx src/run-migrate.ts"
   },
   "dependencies": {
+    "@otp-router/core": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "postgres": "^3.4.5"
   },

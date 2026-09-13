@@ -51,5 +51,8 @@ export async function startInfra(): Promise<Infra> {
 }
 
 export async function truncateAll(pg: PgClient): Promise<void> {
-  await pg`TRUNCATE TABLE webhook_events, delivery_attempts, verifications, accounts CASCADE`;
+  await pg`TRUNCATE TABLE
+    webhook_events, delivery_attempts, verifications, accounts,
+    routing_policies, channel_capability, channel_scores, routing_decisions, provider_rates
+    CASCADE`;
 }

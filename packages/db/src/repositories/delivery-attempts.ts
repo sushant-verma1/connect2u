@@ -55,7 +55,12 @@ export async function findDeliveryAttemptByProviderMessageId(
 
 export async function markDeliveryAttemptSent(
   client: PgClient,
-  params: { id: string; providerMessageId: string; costMicrosAtSend?: number | null },
+  params: {
+    id: string;
+    providerMessageId: string;
+    costMicrosAtSend?: number | null;
+    country?: string | null;
+  },
 ): Promise<DeliveryAttempt | null> {
   const db = drizzle(client);
   const rows = await db
@@ -66,6 +71,8 @@ export async function markDeliveryAttemptSent(
       sentAt: new Date(),
       // G8: frozen at send time — a later rate-card update never rewrites this row.
       costMicrosAtSend: params.costMicrosAtSend ?? null,
+      // R3.7: what score-recompute groups on later — same classification as the cost lookup above.
+      country: params.country ?? null,
     })
     .where(eq(deliveryAttempts.id, params.id))
     .returning();
