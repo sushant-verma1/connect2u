@@ -187,8 +187,10 @@ documented shape.
 `pnpm simulate --scenario=india-mixed --seed=42` drives the **real** routing engine
 (`R9.2`) through a seeded synthetic population and virtual clock — no wall-clock
 sleeping, no reimplemented routing logic. `--ab` compares outcome-scored routing against
-a fixed, non-adaptive channel order on identical traffic. Presets: `india-mixed`,
-`whatsapp-degraded`, `cold-start`, `international` (`packages/simulator/scenarios/`).
+a fixed, non-adaptive channel order on identical traffic. Named presets: `india-mixed`,
+`whatsapp-degraded`, `cold-start`; other scenario files under
+`packages/simulator/scenarios/` (e.g. `international.yaml`) run by path:
+`--scenario=packages/simulator/scenarios/international.yaml`.
 
 **Method.** All numbers below are from `pnpm simulate --scenario=india-mixed --seed=42
 --ab [--fixed-chain=<chain>]`, 10,000 simulated verifications, reproducible with that
@@ -205,10 +207,16 @@ means a correct `/check` within TTL, not a delivery webhook (`G1`).
 
 Read against the fixed WhatsApp-first chain, outcome-scored routing is **~6% cheaper**
 per successful verification and has a **27pp lower fallback rate**, at effectively the
-same verification rate (**-0.4pp**, a wash). Read against SMS-only, outcome-scored
-routing is **4.6pp more successful** but **~3% more expensive** per success — it spends
-more because it tries the (here, cheaper) WhatsApp channel first and sometimes pays for
-a wasted attempt before falling back, but that spend buys more completed verifications.
+same verification rate (**-0.4pp**, a wash). **That ~6% figure is India-domestic-only** —
+it comes from `india-mixed` traffic priced against `provider_rates`' domestic rate card
+(₹0.115 WhatsApp vs ₹0.15 SMS) and does not generalize to international corridors, where
+the rate ratio between channels is different (`PROJECT.md`'s ₹1.75–2.50 international
+WhatsApp band vs a separate SMS rate) and the cost comparison would need its own run to
+state, not an assumption that the domestic direction holds. Read against SMS-only,
+outcome-scored routing is **4.6pp more successful** but **~3% more expensive** per
+success — it spends more because it tries the (here, cheaper) WhatsApp channel first and
+sometimes pays for a wasted attempt before falling back, but that spend buys more
+completed verifications.
 
 **Model limitation: SMS has no reachability gate.** The synthetic population
 (`packages/simulator/src/population.ts`) models WhatsApp reachability explicitly
@@ -278,16 +286,144 @@ through `SimulatedProvider`. None of this touches the parts of the project that 
 actual point — routing, fallback, race handling, and the simulation harness are exercised
 against real Postgres, real Redis, and the real routing engine throughout.
 
-## Running it
+## Running it locally, from a fresh clone
+
+One sequence, in order, verified against a genuinely empty database (`docker compose
+down -v` first if you've run this before and want to confirm it from scratch):
 
 ```
+cp .env.example .env    # fill in the pepper/key values (see comments in the file)
+
 docker compose up -d postgres redis
 pnpm install
-pnpm --filter @otp-router/db db:migrate
-pnpm --filter @otp-router/api seed
-pnpm --filter @otp-router/api seed:rates
-pnpm dev          # api on :3000, worker on :3001 (Bull Board)
+
+pnpm --filter @otp-router/db db:migrate      # applies packages/db/migrations
+pnpm --filter @otp-router/api seed           # prints a usable API key — save it
+pnpm --filter @otp-router/api seed:rates     # provider_rates, needed for cost_micros_at_send
+
+pnpm --filter @otp-router/api dev            # :3000
+pnpm --filter @otp-router/worker dev         # :3001 — Bull Board + the outbox below
+pnpm --filter @otp-router/dashboard dev      # :5173
 ```
+
+(`pnpm dev` from the repo root runs api+worker together via `--parallel`, which is fine
+once you don't need to watch each one's own terminal output separately; the dashboard
+still needs its own `pnpm --filter @otp-router/dashboard dev` either way.)
+
+The `seed`, `seed:rates`, and `db:migrate` scripts all pass `--env-file=../../.env` to
+`tsx`, the same way `dev` does — every entry point that runs outside a container reads
+config from the same root `.env` file, rather than only the long-running servers doing
+so and one-off scripts expecting the shell to already export everything.
+
+**Manual demo, without a real WhatsApp/SMS account.** `SimulatedProvider` never lets the
+API or dashboard see a plaintext code (`I4`) — the server hashes and encrypts it
+immediately and never logs it. So the question "how do I see the code that was 'sent',
+to actually type it into `/check`" needs its own answer, the same way Twilio's and
+Meta's own sandboxes give you a way to inspect an outbound test message: the worker's
+dev-only Fastify instance (`apps/worker/src/bull-board.ts`, only constructed when
+`NODE_ENV=development` — the exact same gate as Bull Board, never present in a
+production build) exposes
+
+```
+GET http://localhost:3001/dev/outbox?phone_number=%2B919876543210
+```
+
+returning every `{ phoneNumber, code, channel, providerMessageId }` `SimulatedProvider`
+has actually sent in this process, in memory only. It's an HTTP response body, not a log
+line — the code never appears in `pino` output anywhere (`R7.2`'s audit covers exactly
+this).
+
+**Straight-through demo (WhatsApp succeeds first try):**
+
+```
+curl -X POST http://localhost:3000/v1/verification/start \
+  -H "Authorization: Bearer <key from seed>" \
+  -H "Content-Type: application/json" \
+  -d '{"phone_number":"+919876543210"}'
+# → { "verification_id": "ver_...", "channel_attempted": "whatsapp", ... }
+
+curl "http://localhost:3001/dev/outbox?phone_number=%2B919876543210"
+# → [{ "phoneNumber": "+919876543210", "code": "123456", "channel": "whatsapp",
+#      "providerMessageId": "sim_..." }]
+
+curl -X POST http://localhost:3000/v1/verification/check \
+  -H "Authorization: Bearer <key from seed>" \
+  -H "Content-Type: application/json" \
+  -d '{"verification_id":"ver_...","code":"123456"}'
+# → { "status": "verified", ... }
+```
+
+**Fallback demo (WhatsApp times out, SMS delivers, then the code verifies).** Left to
+itself, `SimulatedProvider` only ever sends — it never emits a delivery webhook the way
+a real Meta/Twilio callback would, so a channel it sent on will just sit until its
+fallback timer fires (20s for WhatsApp, 30s for SMS) and eventually the whole chain is
+exhausted (`failed`). To make a channel actually _deliver_ instead of timing out, you
+call `POST /v1/webhooks/simulated` yourself — the same endpoint a real provider's
+webhook would hit — using the `providerMessageId` the outbox just gave you for that
+attempt:
+
+```
+curl -X POST http://localhost:3000/v1/verification/start \
+  -H "Authorization: Bearer <key from seed>" -H "Content-Type: application/json" \
+  -d '{"phone_number":"+919876543210"}'
+# → { "verification_id": "ver_...", "channel_attempted": "whatsapp", ... }
+
+# Wait ~20s for the WhatsApp fallback timer to fire (do nothing — no webhook for this one).
+```
+
+Then read the outbox and post the SMS attempt's `delivered` webhook **in one shot** —
+not as two commands typed separately. `POST /v1/webhooks/simulated` returning
+`{"accepted":true}` means the event was enqueued onto `webhookIngestQueue`, not that the
+conditional `UPDATE` has run yet (`R6.4`: verify → dedupe → **200 fast**, process on the
+queue after). That gap is normal and correct — it's the same "respond fast, do the real
+work async" shape as every other webhook path in this project — but it means the time
+between "you have the `providerMessageId`" and "the webhook is actually applied in
+Postgres" is real time, not zero. Splitting outbox-read and webhook-post into two
+separate manual commands (as earlier revisions of this doc did) adds exactly the kind of
+human latency — reading output, copy-pasting an ID, retyping a second curl — that can
+burn through the 20s WhatsApp / 30s SMS window before the webhook ever reaches Postgres,
+at which point the fallback timer wins the row first and legitimately advances the
+chain. One combined command removes that gap:
+
+**bash** (`jq` required):
+
+```bash
+MSG_ID=$(curl -s "http://localhost:3001/dev/outbox?phone_number=%2B919876543210" \
+  | jq -r '[.[] | select(.channel=="sms")] | last | .providerMessageId')
+curl -s -X POST http://localhost:3000/v1/webhooks/simulated \
+  -H "Content-Type: application/json" \
+  -d "{\"provider_message_id\":\"$MSG_ID\",\"event_type\":\"delivered\"}"
+# → { "accepted": true } — the SMS attempt is now "delivered", the verification is
+#   still "pending" (delivered ≠ verified — G1), exactly the state to demo /check from.
+```
+
+**PowerShell:**
+
+```powershell
+$msg = (Invoke-RestMethod "http://localhost:3001/dev/outbox?phone_number=%2B919876543210") |
+  Where-Object { $_.channel -eq "sms" } | Select-Object -Last 1
+Invoke-RestMethod -Method Post "http://localhost:3000/v1/webhooks/simulated" `
+  -ContentType "application/json" `
+  -Body (@{ provider_message_id = $msg.providerMessageId; event_type = "delivered" } | ConvertTo-Json)
+```
+
+```
+curl -X POST http://localhost:3000/v1/verification/check \
+  -H "Authorization: Bearer <key from seed>" -H "Content-Type: application/json" \
+  -d '{"verification_id":"ver_...","code":"123456"}'
+# → { "status": "verified", ... }
+```
+
+No env var or scenario config turns this on — `POST /v1/webhooks/simulated` (added in
+Phase 3/4 for the fallback and dedupe tests, `apps/api/src/routes/webhooks.ts`) is
+always there; the manual demo just calls it directly instead of a real provider calling
+it. `event_type: "failed"` works the same way if you want to demo a hard provider error
+advancing the chain instead of a timeout.
+
+Open `http://localhost:5173/trace/<verification_id>` in the dashboard to see the same
+verification's routing decision, attempts, and webhook events end to end — this is
+where the WhatsApp `timed_out` / SMS `delivered` split from the fallback demo above is
+easiest to actually look at.
 
 ## Deploy
 
@@ -310,11 +446,25 @@ static host (e.g. Vercel, Netlify, or an nginx container) pointed at the deploye
 origin via `VITE_API_URL`; it isn't part of `docker-compose.yml` because it's stateless
 and has no dependency on the other three services being colocated.
 
+## Known gaps
+
+**A `failed` verification carries no reason code.** `R1.2.6`'s `/check` outcome
+vocabulary (`verified`, `invalid_code`, `expired`, `already_verified`,
+`attempts_exceeded`, `not_found`, `failed`) covers why a `/check` _call_ was rejected,
+but a verification that reaches the terminal `failed` state via chain exhaustion (every
+channel timed out or hard-errored, with no `/check` ever attempted) exposes the same
+bare `"status": "failed"` as a verification that failed for some other reason — a caller
+can't distinguish "every channel we tried couldn't reach this number" from other
+terminal-failure paths, or get a per-channel breakdown, from `GET /verification/:id`
+alone (that detail exists in `GET /verification/:id/trace`'s `attempts` array, but the
+trace endpoint is a debugging/dashboard view, not the integration-facing contract).
+Not built — noting it as a gap rather than adding a reason-code field speculatively.
+
 ## Resume line
 
 > Built a provider-independent OTP verification router (Node/TS, Postgres, Redis,
 > BullMQ) with outcome-scored channel selection and automatic fallback; measured
-> **4.6pp higher verification rate** than SMS-only routing and **~6% lower cost per
-> successful verification** than a fixed WhatsApp-first fallback chain, at **27.5s p95**
-> time-to-verify across 10,000 simulated verifications (seed 42, `india-mixed` scenario —
-> see Simulation results above for method and the model's SMS-reachability caveat).
+> **4.6pp higher verification rate** than SMS-only routing and **9.7s lower p95**
+> (27.5s vs 37.2s) than a fixed WhatsApp-first fallback chain, across 10,000 simulated
+> verifications (seed 42, `india-mixed` scenario — see Simulation results above for
+> method, the ~6% domestic-only cost figure, and the model's SMS-reachability caveat).
