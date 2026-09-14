@@ -310,10 +310,16 @@ pnpm --filter @otp-router/dashboard dev      # :5173
 once you don't need to watch each one's own terminal output separately; the dashboard
 still needs its own `pnpm --filter @otp-router/dashboard dev` either way.)
 
-The `seed`, `seed:rates`, and `db:migrate` scripts all pass `--env-file=../../.env` to
-`tsx`, the same way `dev` does — every entry point that runs outside a container reads
-config from the same root `.env` file, rather than only the long-running servers doing
-so and one-off scripts expecting the shell to already export everything.
+Every entry point — `dev` and `start` for both servers, plus `seed`, `seed:rates`,
+`db:migrate`, and `send:hello-world` — passes `--env-file-if-exists=../../.env` to
+`tsx`. Locally that reads config from the same root `.env`, so no script expects the
+shell to have exported everything already. In a deployed container there is no `.env`
+(`.dockerignore` excludes it) and Railway/Fly inject real environment variables instead;
+`-if-exists` makes the missing file a no-op rather than a boot failure, which is why
+`start` carries the same flag as `dev` rather than being the one entry point without it.
+
+Requires Node >= 22.9 (`--env-file-if-exists`), which `engines` pins. A real environment
+variable always wins over a `.env` entry, so a stray file cannot shadow injected config.
 
 **Manual demo, without a real WhatsApp/SMS account.** `SimulatedProvider` never lets the
 API or dashboard see a plaintext code (`I4`) — the server hashes and encrypts it

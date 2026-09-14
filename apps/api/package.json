@@ -4,14 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --env-file=../../.env src/server.ts",
-    "start": "tsx src/server.ts",
+    "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
+    "start": "tsx --env-file-if-exists=../../.env src/server.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "seed": "tsx --env-file=../../.env src/scripts/seed.ts",
-    "seed:rates": "tsx --env-file=../../.env src/scripts/seed-provider-rates.ts",
-    "send:hello-world": "tsx --env-file=../../.env src/scripts/send-meta-hello-world.ts"
+    "seed": "tsx --env-file-if-exists=../../.env src/scripts/seed.ts",
+    "seed:rates": "tsx --env-file-if-exists=../../.env src/scripts/seed-provider-rates.ts",
+    "send:hello-world": "tsx --env-file-if-exists=../../.env src/scripts/send-meta-hello-world.ts"
   },
   "dependencies": {
     "@bull-board/api": "^9.10.0",
