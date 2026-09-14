@@ -407,6 +407,17 @@ Invoke-RestMethod -Method Post "http://localhost:3000/v1/webhooks/simulated" `
   -Body (@{ provider_message_id = $msg.providerMessageId; event_type = "delivered" } | ConvertTo-Json)
 ```
 
+Both forms narrow the outbox to one row before reading `providerMessageId`, and that
+part is not optional: `/dev/outbox` returns every message this worker process has sent
+since it started, across every verification, so on the unfiltered list
+`.providerMessageId` is a whole array — which PowerShell string-interpolates into one
+space-joined value. The route only requires a non-empty string (`min(1)`), so that
+reaches the server as a plausible-looking ID, gets `{"accepted":true}` like any other
+event (`R6.4`), and then matches no delivery attempt: the worker logs `webhook event for
+unknown provider_message_id — no-op` and changes nothing (`R6.5`). That is the intended
+behaviour, but from the client side it is indistinguishable from a webhook that worked,
+so check the worker log if a channel you "delivered" still times out.
+
 ```
 curl -X POST http://localhost:3000/v1/verification/check \
   -H "Authorization: Bearer <key from seed>" -H "Content-Type: application/json" \
@@ -447,6 +458,15 @@ origin via `VITE_API_URL`; it isn't part of `docker-compose.yml` because it's st
 and has no dependency on the other three services being colocated.
 
 ## Known gaps
+
+**How a verified verification gets attributed to a channel is a convention, not a
+measurement.** Every channel in a chain sends the same code (`R2.3`) and nothing observes
+which message the user actually read, so `channel_verified` — and therefore
+`channel_scores`' per-channel verification rate, `G1`'s metric — is decided by rule: the
+last channel that delivered, falling back to the last one sent, or `null` when nothing was
+sent. The rule, why it is last-delivered rather than first-attempt, the residual bias it
+cannot remove, and the constant-`"whatsapp"` bug that made this metric meaningless for
+six phases are all in `docs/findings/channel-attribution.md`.
 
 **A `failed` verification carries no reason code.** `R1.2.6`'s `/check` outcome
 vocabulary (`verified`, `invalid_code`, `expired`, `already_verified`,

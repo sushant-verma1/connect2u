@@ -70,7 +70,9 @@ const checkBodySchema = z.object({
 const checkResponseSchema = z.object({
   verification_id: z.string(),
   status: z.enum(CHECK_OUTCOMES),
-  channel_verified: z.string().optional(),
+  // Nullable, not merely optional: a verified verification whose attribution resolved
+  // to nothing reports null rather than a channel name (check-verification.ts).
+  channel_verified: z.string().nullable().optional(),
   attempts_used: z.number().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
@@ -89,7 +91,7 @@ const getResponseSchema = z.object({
   expires_at: z.string(),
   attempts_used: z.number(),
   max_attempts: z.number(),
-  channel_verified: z.string().optional(),
+  channel_verified: z.string().nullable().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 
@@ -490,7 +492,10 @@ export function registerVerificationRoutes(
       return reply.code(200).send({
         verification_id: body.verification_id,
         status: result.outcome,
-        channel_verified: result.verification?.verifiedChannel ?? undefined,
+        channel_verified:
+          result.outcome === "verified"
+            ? (result.verification?.verifiedChannel ?? null)
+            : undefined,
         attempts_used: result.verification?.attemptsUsed,
         metadata: result.verification?.metadataJson,
       });
@@ -519,7 +524,8 @@ export function registerVerificationRoutes(
         expires_at: verification.expiresAt.toISOString(),
         attempts_used: verification.attemptsUsed,
         max_attempts: verification.maxAttempts,
-        channel_verified: verification.verifiedChannel ?? undefined,
+        channel_verified:
+          verification.status === "verified" ? verification.verifiedChannel : undefined,
         metadata: verification.metadataJson,
       });
     },

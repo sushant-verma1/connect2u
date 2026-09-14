@@ -65,7 +65,7 @@ export async function findVerificationScoped(
  */
 export async function markVerified(
   client: PgClient,
-  params: { id: string; accountId: string; channel: string; timeToVerifyMs: number },
+  params: { id: string; accountId: string; channel: string | null; timeToVerifyMs: number },
 ): Promise<Verification | null> {
   const db = drizzle(client);
   const rows = await db

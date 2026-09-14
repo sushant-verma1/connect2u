@@ -40,7 +40,8 @@ export type CheckParams = {
 export type CheckResult = {
   verification_id: string;
   status: CheckOutcome;
-  channel_verified?: string;
+  /** null on a verified verification with no attributable attempt — never defaulted. */
+  channel_verified?: string | null;
   attempts_used?: number;
   metadata?: Record<string, unknown>;
 };
@@ -51,7 +52,7 @@ export type GetResult = {
   expires_at: string;
   attempts_used: number;
   max_attempts: number;
-  channel_verified?: string;
+  channel_verified?: string | null;
   metadata?: Record<string, unknown>;
 };
 

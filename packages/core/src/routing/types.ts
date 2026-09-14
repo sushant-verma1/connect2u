@@ -57,7 +57,7 @@ export type CapabilityRecord = Readonly<{
 export type ChannelScoreRecord = Readonly<{
   channel: Channel;
   verificationRate: number; // 0..1
-  p50Ms: number;
+  p50Ms: number | null; // null when the window verified nothing on this channel
 }>;
 
 export type ProviderRateRecord = Readonly<{

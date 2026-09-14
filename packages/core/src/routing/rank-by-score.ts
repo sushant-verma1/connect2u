@@ -5,6 +5,8 @@ import type { CandidateChannel, ChannelScoreRecord, DecisionLogEntry } from "./t
 // tie-breaks to anything actually measured, so a known-fast channel wins ties over an
 // unmeasured guess.
 const UNSCORED_VERIFICATION_RATE = 0.5;
+// Also what a scored channel with a null p50 gets: sends but no verifications in the
+// window means no measured time-to-verify, which must not read as a fast one.
 const UNSCORED_P50_MS = Number.POSITIVE_INFINITY;
 
 export type RankByScoreResult = Readonly<{

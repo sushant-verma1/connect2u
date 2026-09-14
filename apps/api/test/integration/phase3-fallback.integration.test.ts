@@ -4,6 +4,7 @@ import type { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { pino } from "pino";
 import { insertAccount } from "@otp-router/db/repositories/accounts";
+import { upsertCapability } from "@otp-router/db/repositories/channel-capability";
 import { findVerificationScoped } from "@otp-router/db/repositories/verifications";
 import { SimulatedProvider } from "@otp-router/providers/simulated";
 import { createDeliveryWorker } from "@otp-router/worker/queue/delivery-worker";
@@ -12,6 +13,7 @@ import { closeQueues, createQueues, type Queues } from "@otp-router/worker/queue
 import { createWebhookIngestWorker } from "@otp-router/worker/queue/webhook-worker";
 import { buildApp } from "../../src/app.js";
 import { generateApiKey, hashApiKey } from "../../src/crypto/api-key.js";
+import { hashPhone } from "../../src/crypto/phone.js";
 import { startInfra, truncateAll, type Infra } from "./harness.js";
 
 const OTP_PEPPER = "test-otp-pepper";
@@ -357,5 +359,91 @@ describe("Phase 3 — fallback and webhook races", () => {
 
     const verification = await findVerificationScoped(infra.pg, verificationId, accountId);
     expect(verification?.status).toBe("pending");
+  });
+
+  // G1 attribution: the channel credited for a verification is the last one that
+  // actually delivered, not the one the chain happened to start on. WhatsApp times out
+  // here and SMS delivers, so SMS gets the credit — this is the case that used to
+  // record "whatsapp" from a hardcoded default and silently zeroed SMS's verification
+  // rate in channel_scores (docs/findings/channel-attribution.md).
+  it("credits the channel that delivered, not the one attempted first", async () => {
+    const startRes = await app.inject({
+      method: "POST",
+      url: "/v1/verification/start",
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { phone_number: "+919876543210" },
+    });
+    const { verification_id: verificationId } = startRes.json();
+
+    await waitForSent(verificationId, 0);
+    const code = provider.sentMessages[0]?.code;
+    expect(code).toMatch(/^\d{6}$/);
+
+    // WhatsApp gets no webhook — its timer fires and the chain advances to SMS.
+    await waitFor(async () => {
+      const attempts = await attemptsFor(verificationId);
+      return attempts.length === 2 && attempts[0]?.status === "timed_out";
+    });
+    await waitForSent(verificationId, 1);
+
+    const smsMessageId = requireMessageId(
+      (await attemptsFor(verificationId))[1]?.provider_message_id,
+    );
+    await app.inject({
+      method: "POST",
+      url: "/v1/webhooks/simulated",
+      payload: { provider_message_id: smsMessageId, event_type: "delivered" },
+    });
+    await waitFor(async () => (await attemptsFor(verificationId))[1]?.status === "delivered");
+
+    const checkRes = await app.inject({
+      method: "POST",
+      url: "/v1/verification/check",
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { verification_id: verificationId, code },
+    });
+    expect(checkRes.json().status).toBe("verified");
+    expect(checkRes.json().channel_verified).toBe("sms");
+
+    const verification = await findVerificationScoped(infra.pg, verificationId, accountId);
+    expect(verification?.verifiedChannel).toBe("sms");
+  });
+
+  // R3.6 + G1 attribution: WhatsApp is dropped from the chain before anything is sent,
+  // so it can never be credited. The old default credited it anyway — on a verification
+  // where WhatsApp was not merely unread but never attempted.
+  it("never credits a channel the capability cache skipped", async () => {
+    await upsertCapability(infra.pg, hashPhone("+919876543210", PHONE_HASH_PEPPER), {
+      channel: "whatsapp",
+      capability: "unlikely",
+      confidence: 0.1,
+      lastSuccessAt: null,
+      consecutiveFailures: 2,
+      updatedAt: new Date(),
+    });
+
+    const startRes = await app.inject({
+      method: "POST",
+      url: "/v1/verification/start",
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { phone_number: "+919876543210" },
+    });
+    expect(startRes.json().channel_attempted).toBe("sms");
+    const { verification_id: verificationId } = startRes.json();
+
+    await waitForSent(verificationId, 0);
+    const code = provider.sentMessages[0]?.code;
+
+    const checkRes = await app.inject({
+      method: "POST",
+      url: "/v1/verification/check",
+      headers: { authorization: `Bearer ${apiKey}` },
+      payload: { verification_id: verificationId, code },
+    });
+    expect(checkRes.json().status).toBe("verified");
+    expect(checkRes.json().channel_verified).toBe("sms");
+
+    const attempts = await attemptsFor(verificationId);
+    expect(attempts.map((a) => a.channel)).toEqual(["sms"]);
   });
 });

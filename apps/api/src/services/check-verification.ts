@@ -1,5 +1,9 @@
 import type { PgClient } from "@otp-router/db/client";
 import {
+  findDeliveryAttemptsByVerification,
+  type DeliveryAttempt,
+} from "@otp-router/db/repositories/delivery-attempts";
+import {
   findVerificationScoped,
   markExpired,
   markVerified,
@@ -41,7 +45,7 @@ export async function checkVerification(
     const updated = await markVerified(pg, {
       id: params.verificationId,
       accountId: params.accountId,
-      channel: verification.verifiedChannel ?? "whatsapp",
+      channel: await attributeChannel(pg, params.verificationId),
       timeToVerifyMs: Date.now() - verification.createdAt.getTime(),
     });
     if (updated) {
@@ -61,6 +65,58 @@ export async function checkVerification(
     };
   }
   return resolveLostRace(pg, params, verification);
+}
+
+/**
+ * G1/R3.7: which channel gets credit for this verification.
+ *
+ * There is no measurement available here. Every channel in a chain carries the *same*
+ * code by design (R2.3 — it is never regenerated on fallback), and nothing in the
+ * system observes which message a user actually read; `/check` receives six digits and
+ * no provenance. Attribution is therefore a stated convention, not an observation, and
+ * the only honest question is which convention is least wrong.
+ *
+ * The convention: the most recently `delivered` attempt, falling back to the most
+ * recently `sent` one when no delivery was ever confirmed.
+ *
+ * Why not first-attempt: `channel_scores` divides verifications by sends per channel
+ * (packages/db/src/repositories/channel-scores.ts), and that ratio is what
+ * `rankByScore` orders the chain on. Crediting the first attempt would credit the
+ * channel that routing already picked first, so the score would measure chain position
+ * rather than channel performance and would then feed itself. Last-delivered is
+ * biased the other way — toward whichever channel the chain ended on — but that is the
+ * channel whose message was most recently in front of the user, and it is the only rule
+ * that can ever move credit *away* from the incumbent first choice.
+ *
+ * Returns null when no attempt was ever sent (nothing was in front of the user to
+ * read). Null is recorded and surfaced as null; it is never defaulted to a channel
+ * name — a plausible default here is indistinguishable from a measurement and hid a
+ * broken metric for six phases (docs/findings/channel-attribution.md).
+ */
+async function attributeChannel(pg: PgClient, verificationId: string): Promise<string | null> {
+  const attempts = await findDeliveryAttemptsByVerification(pg, verificationId);
+  const attributed =
+    latestAt(attempts, (a) => a.deliveredAt) ?? latestAt(attempts, (a) => a.sentAt);
+  return attributed?.channel ?? null;
+}
+
+/** Latest attempt by an event timestamp, ignoring attempts where it is null. Ordered
+ * on the event time rather than on attempt id: a late `delivered` webhook (R4.8) can
+ * land after a subsequent channel was already sent. */
+function latestAt(
+  attempts: readonly DeliveryAttempt[],
+  pick: (attempt: DeliveryAttempt) => Date | null,
+): DeliveryAttempt | null {
+  let latest: DeliveryAttempt | null = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const attempt of attempts) {
+    const at = pick(attempt);
+    if (at && at.getTime() >= latestMs) {
+      latest = attempt;
+      latestMs = at.getTime();
+    }
+  }
+  return latest;
 }
 
 /**

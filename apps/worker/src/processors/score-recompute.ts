@@ -30,8 +30,11 @@ export function createScoreRecomputeProcessor(pg: PgClient, logger: Logger) {
         channel: stat.channel,
         country: stat.country,
         verificationRate: stat.verifications / stat.sends,
-        p50Ms: Math.round(stat.p50Ms ?? 0),
-        p95Ms: Math.round(stat.p95Ms ?? 0),
+        // A window with sends but no verifications has no latency — null, never 0. A
+        // rounded 0 is indistinguishable from "verified instantly" to the p50
+        // tie-break in rank-by-score.ts (docs/findings/channel-attribution.md).
+        p50Ms: stat.p50Ms === null ? null : Math.round(stat.p50Ms),
+        p95Ms: stat.p95Ms === null ? null : Math.round(stat.p95Ms),
         windowStart,
         windowEnd,
       }));

@@ -58,7 +58,12 @@ export type AggregatedChannelStat = Readonly<{
 /**
  * R3.7/R3.8: the score-recompute job's one query — verification rate (successful
  * `/check` within TTL, attributed to whichever channel `verified_channel` names ÷
- * sends on that channel), never delivery rate. `country` comes from
+ * sends on that channel), never delivery rate. `verified_channel` is a convention, not
+ * a measurement — the last channel that delivered, since every channel carries the
+ * same code and nothing observes which one the user read (the reasoning, and the bug
+ * that made it a constant, are in apps/api/src/services/check-verification.ts and
+ * docs/findings/channel-attribution.md). A verification with no attributable attempt
+ * has `verified_channel = NULL` and is counted for no channel. `country` comes from
  * `delivery_attempts.country`, written at send time from the same two-bucket
  * classification G8's cost lookup already uses (apps/worker/src/processors/delivery.ts).
  * `windowStart`/`windowEnd` bound which attempts count.

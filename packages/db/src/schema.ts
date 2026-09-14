@@ -244,8 +244,11 @@ export const channelScores = pgTable(
     // until that lands, which keeps the column real without faking data it doesn't have.
     carrierClass: text("carrier_class").notNull().default("unknown"),
     verificationRate: doublePrecision("verification_rate").notNull(),
-    p50Ms: integer("p50_ms").notNull(),
-    p95Ms: integer("p95_ms").notNull(),
+    // Nullable on purpose: a window with sends but no verifications has no latency to
+    // report. Written as 0, the p50 tie-break in rank-by-score.ts reads "unknown" as
+    // "instant" — NULL reads as unranked (UNSCORED_P50_MS) instead.
+    p50Ms: integer("p50_ms"),
+    p95Ms: integer("p95_ms"),
     costPerSuccessMicros: bigint("cost_per_success_micros", { mode: "number" }),
     windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
     windowEnd: timestamp("window_end", { withTimezone: true }).notNull(),

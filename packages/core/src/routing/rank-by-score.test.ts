@@ -33,6 +33,16 @@ describe("rankByScore", () => {
     expect(result.candidates.map((c) => c.channel)).toEqual(["whatsapp", "sms"]);
   });
 
+  it("a null p50 loses the tie-break rather than reading as instant", () => {
+    const scores: ChannelScoreRecord[] = [
+      // whatsapp verified nothing in the window, so it has sends but no latency.
+      { channel: "whatsapp", verificationRate: 0.8, p50Ms: null },
+      { channel: "sms", verificationRate: 0.8, p50Ms: 9000 },
+    ];
+    const result = rankByScore(CANDIDATES, scores);
+    expect(result.candidates.map((c) => c.channel)).toEqual(["sms", "whatsapp"]);
+  });
+
   it("logs nothing when the score-driven order matches the input order", () => {
     const result = rankByScore(CANDIDATES, []);
     expect(result.candidates.map((c) => c.channel)).toEqual(["whatsapp", "sms"]);
