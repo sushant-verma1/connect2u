@@ -1,0 +1,21 @@
+# Rendered by the nginx image's own entrypoint (envsubst over /etc/nginx/templates/*.template)
+# so ${PORT} picks up Railway's injected value. $uri is left alone — the entrypoint only
+# substitutes variables that actually exist in the environment.
+server {
+    listen ${PORT};
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # Client-side routes (/trace/:id) have no file on disk — a direct visit or a shared
+    # link must still get the SPA shell rather than a 404.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
