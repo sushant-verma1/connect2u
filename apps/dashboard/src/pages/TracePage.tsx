@@ -2,7 +2,6 @@ import { type FormEvent, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTrace, ApiError } from "../lib/api";
-import { useApiKey } from "../lib/ApiKeyContext";
 import { Card, CardContent } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { VerificationSummaryCard } from "./trace/VerificationSummaryCard";
@@ -55,12 +54,11 @@ function TraceSkeleton() {
 
 export function TracePage() {
   const { id } = useParams<{ id: string }>();
-  const [apiKey] = useApiKey();
 
   const query = useQuery({
-    queryKey: ["trace", id, apiKey],
-    queryFn: () => fetchTrace(id as string, apiKey),
-    enabled: Boolean(id && apiKey),
+    queryKey: ["trace", id],
+    queryFn: () => fetchTrace(id as string),
+    enabled: Boolean(id),
     refetchInterval: (q) => (q.state.data?.status === "pending" ? POLL_INTERVAL_MS : false),
   });
 
@@ -71,15 +69,7 @@ export function TracePage() {
         <SearchBar initialId={id ?? ""} />
       </div>
 
-      {!apiKey && (
-        <Card>
-          <CardContent className="text-sm text-slate-600">
-            Enter an API key in the top-right corner to load a trace.
-          </CardContent>
-        </Card>
-      )}
-
-      {apiKey && !id && (
+      {!id && (
         <Card>
           <CardContent className="text-sm text-slate-600">
             Paste a verification ID above — it's the <code>verification_id</code> returned by{" "}
@@ -88,9 +78,9 @@ export function TracePage() {
         </Card>
       )}
 
-      {apiKey && id && query.isPending && <TraceSkeleton />}
+      {id && query.isPending && <TraceSkeleton />}
 
-      {apiKey && id && query.isError && (
+      {id && query.isError && (
         <Card>
           <CardContent className="text-sm text-rose-600">
             {query.error instanceof ApiError && query.error.status === 404

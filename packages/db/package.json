@@ -8,6 +8,7 @@
     "./schema": "./src/schema.ts",
     "./migrate": "./src/migrate.ts",
     "./repositories/accounts": "./src/repositories/accounts.ts",
+    "./repositories/api-keys": "./src/repositories/api-keys.ts",
     "./repositories/verifications": "./src/repositories/verifications.ts",
     "./repositories/delivery-attempts": "./src/repositories/delivery-attempts.ts",
     "./repositories/webhook-events": "./src/repositories/webhook-events.ts",

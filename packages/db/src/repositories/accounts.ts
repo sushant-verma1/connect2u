@@ -5,22 +5,26 @@ import { accounts } from "../schema.js";
 
 export type Account = typeof accounts.$inferSelect;
 
-export async function findAccountByApiKeyPrefix(
-  client: PgClient,
-  apiKeyPrefix: string,
-): Promise<Account | null> {
-  const db = drizzle(client);
-  const rows = await db
-    .select()
-    .from(accounts)
-    .where(eq(accounts.apiKeyPrefix, apiKeyPrefix))
-    .limit(1);
-  return rows[0] ?? null;
-}
-
 export async function findAccountById(client: PgClient, id: string): Promise<Account | null> {
   const db = drizzle(client);
   const rows = await db.select().from(accounts).where(eq(accounts.id, id)).limit(1);
+  return rows[0] ?? null;
+}
+
+/** R13.6/R13.7: the uniqueness check both signup and the Google callback rely on
+ * (D1 — accounts are never auto-linked by email; a matching row is always a conflict). */
+export async function findAccountByEmail(client: PgClient, email: string): Promise<Account | null> {
+  const db = drizzle(client);
+  const rows = await db.select().from(accounts).where(eq(accounts.email, email)).limit(1);
+  return rows[0] ?? null;
+}
+
+export async function findAccountByGoogleSub(
+  client: PgClient,
+  googleSub: string,
+): Promise<Account | null> {
+  const db = drizzle(client);
+  const rows = await db.select().from(accounts).where(eq(accounts.googleSub, googleSub)).limit(1);
   return rows[0] ?? null;
 }
 

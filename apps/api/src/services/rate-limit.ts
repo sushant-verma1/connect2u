@@ -152,3 +152,50 @@ export async function checkStartRateLimits(
   }
   return null;
 }
+
+// R13.6: login is the credential-stuffing surface — per-email is the tight ceiling (a
+// real user logs in rarely enough that 5/15min is generous; a script trying passwords
+// against one address is exactly this shape). Per-IP sits above it for the same
+// NAT/shared-IP reason as RATE_LIMITS.perIp. Placeholder ceilings, same as RATE_LIMITS —
+// no production traffic yet to tune against.
+export const LOGIN_RATE_LIMITS = {
+  perEmail: { limit: 5, windowMs: 15 * 60 * 1000 }, // 5 / 15 min
+  perIp: { limit: 20, windowMs: 15 * 60 * 1000 }, // 20 / 15 min
+} as const;
+
+export type LoginRateLimitBreach = Readonly<{
+  scope: "email" | "ip";
+  retryAfterMs: number;
+}>;
+
+/** R13.6: `emailHash` — never the plaintext address — as the Redis key, same reasoning
+ * as phone_hash elsewhere: this key doesn't need to be reversible, just stable. */
+export async function checkLoginRateLimits(
+  redis: Redis,
+  params: { emailHash: string; ip: string },
+): Promise<LoginRateLimitBreach | null> {
+  const scopes: readonly LoginRateLimitBreach["scope"][] = ["email", "ip"];
+  const specs: readonly SlidingWindowSpec[] = [
+    {
+      key: `rl:login-email:${params.emailHash}`,
+      limit: LOGIN_RATE_LIMITS.perEmail.limit,
+      windowMs: LOGIN_RATE_LIMITS.perEmail.windowMs,
+    },
+    {
+      key: `rl:login-ip:${params.ip}`,
+      limit: LOGIN_RATE_LIMITS.perIp.limit,
+      windowMs: LOGIN_RATE_LIMITS.perIp.windowMs,
+    },
+  ];
+
+  const results = await checkSlidingWindows(redis, specs);
+
+  for (let i = 0; i < scopes.length; i++) {
+    const result = results[i];
+    const scope = scopes[i];
+    if (scope && result && !result.allowed) {
+      return { scope, retryAfterMs: result.retryAfterMs };
+    }
+  }
+  return null;
+}

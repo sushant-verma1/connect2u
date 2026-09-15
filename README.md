@@ -256,18 +256,65 @@ const final = await client.waitForResult(verification_id, { intervalMs: 2000, ti
 
 Articulated scoping reads as maturity; unexplained gaps read as abandonment.
 
-| Excluded                                   | Reason                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Ads or promotional content in messages** | Structurally impossible. WhatsApp authentication templates use a preset format with no URLs, media, or emojis, and only authentication templates may carry a passcode. Mixing promotional content risks reclassification of every template on the account. Indian SMS is blocked equivalently by DLT. |
-| Voice OTP                                  | A whole telephony surface for one more chart bar                                                                                                                                                                                                                                                      |
-| Push channel                               | Requires per-customer mobile SDK integration                                                                                                                                                                                                                                                          |
-| Email channel                              | Least interesting adapter, deepest deliverability rabbit hole                                                                                                                                                                                                                                         |
-| Billing / payments                         | Track cost, don't collect money                                                                                                                                                                                                                                                                       |
-| Template management UI                     | Meta's console does this                                                                                                                                                                                                                                                                              |
-| Full read-model dashboard                  | Phase 8 built the single-verification trace view (the screen that demonstrates the system); Overview/Cost/Failures/Providers would need a materialised view (`R10.1`) that doesn't exist yet, so those nav destinations were removed rather than left as dead links                                   |
-| Multi-region                               | One region                                                                                                                                                                                                                                                                                            |
-| Magic links / passkeys                     | Different product                                                                                                                                                                                                                                                                                     |
-| Any LLM anywhere                           | Nothing here needs one; adding one weakens the project                                                                                                                                                                                                                                                |
+| Excluded                                                    | Reason                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ads or promotional content in messages**                  | Structurally impossible. WhatsApp authentication templates use a preset format with no URLs, media, or emojis, and only authentication templates may carry a passcode. Mixing promotional content risks reclassification of every template on the account. Indian SMS is blocked equivalently by DLT. |
+| Voice OTP                                                   | A whole telephony surface for one more chart bar                                                                                                                                                                                                                                                      |
+| Push channel                                                | Requires per-customer mobile SDK integration                                                                                                                                                                                                                                                          |
+| Email channel                                               | Least interesting adapter, deepest deliverability rabbit hole                                                                                                                                                                                                                                         |
+| Billing / payments                                          | Track cost, don't collect money                                                                                                                                                                                                                                                                       |
+| Template management UI                                      | Meta's console does this                                                                                                                                                                                                                                                                              |
+| Full read-model dashboard                                   | Phase 8 built the single-verification trace view (the screen that demonstrates the system); Overview/Cost/Failures/Providers would need a materialised view (`R10.1`) that doesn't exist yet, so those nav destinations were removed rather than left as dead links                                   |
+| Multi-region                                                | One region                                                                                                                                                                                                                                                                                            |
+| Magic links / passkeys                                      | Different product                                                                                                                                                                                                                                                                                     |
+| Any LLM anywhere                                            | Nothing here needs one; adding one weakens the project                                                                                                                                                                                                                                                |
+| Email verification                                          | A two-day onboarding scope; signup and login work without it. Also why Google account linking is never automatic — see below                                                                                                                                                                          |
+| Password reset                                              | No email sending exists yet to deliver a reset link to                                                                                                                                                                                                                                                |
+| Team members / multiple users per account                   | One account, one owner. The schema (`accounts` ↔ `api_keys`) already supports many keys per account; many _people_ per account is a different feature                                                                                                                                                 |
+| Plan tiers                                                  | Nothing to gate — every self-serve account behaves identically                                                                                                                                                                                                                                        |
+| Linking a Google identity onto an existing password account | Deliberately excluded, not merely deferred — see "Self-serve onboarding" below for why                                                                                                                                                                                                                |
+
+## Self-serve onboarding
+
+A human can sign up, log in, and manage API keys entirely from the dashboard — no
+terminal, no `psql` insert. Two credential types, kept deliberately disjoint:
+
+- **API keys** (`sk_test_...`) — for servers. Authenticate `/v1/verification/*` and
+  every other server-to-server route. Argon2-hashed, a non-secret prefix identifies
+  the row.
+- **Sessions** (`sid` cookie) — for humans in the dashboard's browser tab. httpOnly,
+  `SameSite=Lax`, 8h TTL. Authenticate `/v1/keys` and the dashboard's trace route.
+
+Neither substitutes for the other: a session can't call `/v1/verification/start`, and
+an API key can't call `/v1/keys` — enforced by two separate auth hooks on two disjoint
+route sets, not one hook that trusts a shared branch.
+
+**The 30-second revocation lag.** The API-key auth cache (`api-key-auth.ts`) caches a
+verified key for 30s so argon2 — deliberately slow — isn't paid on every request.
+`DELETE /v1/keys/:id` evicts the key from the _revoking_ instance's cache immediately,
+but on a multi-instance deployment another instance can still honour it for up to 30s.
+The keys page states that bound next to the revoke button rather than leaving it as a
+surprise.
+
+**Sign in with Google.** Authorization code flow with PKCE; the client secret is a
+server-side POST field during the token exchange and never reaches the browser. The
+`state` parameter is validated against a value stored in a short-lived cookie set at
+redirect time — a callback with a missing or mismatched `state` is rejected before any
+token exchange happens. Redirect URIs are read from `DASHBOARD_ORIGIN` (config), never
+hardcoded, since localhost and the Railway origin differ.
+
+**Account linking — never automatic.** Signing up with email+password and later
+signing in with Google using the same address does **not** merge the two. Google's
+`email_verified: true` only means Google controls that mailbox right now; it says
+nothing about whether whoever registered the email _here_, earlier, with a password,
+is the same person. Auto-linking on a matching email is an account-takeover path: an
+attacker pre-registers the victim's email with a password, the victim later signs in
+with Google, and if that merges into the attacker's already-known-password account,
+`email_verified: true` was satisfied the entire time and didn't stop it. So: a matching
+email is always a `409 email_already_registered`, on both signup and the Google
+callback. Linking an existing session to a Google identity (or vice versa) is a real
+feature — it just requires the linking request to come from _inside_ an authenticated
+session, where "this is the same person" is actually established. Not built here.
 
 ## Platform constraints (read this before asking "why is WhatsApp simulated?")
 
@@ -298,7 +345,7 @@ docker compose up -d postgres redis
 pnpm install
 
 pnpm --filter @otp-router/db db:migrate      # applies packages/db/migrations
-pnpm --filter @otp-router/api seed           # prints a usable API key — save it
+pnpm --filter @otp-router/api seed           # prints a dashboard login AND an API key — save both
 pnpm --filter @otp-router/api seed:rates     # provider_rates, needed for cost_micros_at_send
 
 pnpm --filter @otp-router/api dev            # :3000
@@ -442,6 +489,35 @@ verification's routing decision, attempts, and webhook events end to end — thi
 where the WhatsApp `timed_out` / SMS `delivered` split from the fallback demo above is
 easiest to actually look at.
 
+### Sign in with Google (optional)
+
+The dashboard works entirely without this — email + password is the default path.
+"Sign in with Google" only appears once `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`
+are both set (same conditional-registration pattern as the Meta webhook route).
+
+**Google Cloud Console, one-time setup:**
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → new project.
+2. **APIs & Services → OAuth consent screen** → User type **External** → fill in an
+   app name and your own email as both support and developer contact → **Save**.
+   Scopes: `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile` — all
+   non-sensitive, no Google review needed. Leave publishing status **Testing** and add
+   your own Google account under **Test users**.
+3. **Credentials → Create credentials → OAuth client ID → Web application.**
+4. **Authorized redirect URIs** — exact, byte-for-byte. This is the dashboard's origin
+   (`DASHBOARD_ORIGIN`), not the API's — the dashboard proxies `/v1/*` through to the
+   API (`vite.config.ts` in dev, `nginx.conf.template` in prod), so Google's redirect
+   lands on the dashboard's origin first:
+   - `http://localhost:5173/v1/auth/google/callback`
+   - `https://<your-dashboard>.up.railway.app/v1/auth/google/callback`
+
+   Authorized JavaScript origins: none needed — the browser never calls Google
+   directly, only the API does, server-side.
+
+5. Copy the **Client ID** and **Client secret**. The secret is an API-service env var
+   only — it never becomes a `VITE_*` variable, and never ends up in the dashboard's
+   build output.
+
 ## Deploy
 
 `docker compose up -d --build` brings up all four services declared in
@@ -458,10 +534,24 @@ pnpm --filter @otp-router/api seed:rates
 
 `GET /health` and `GET /ready` (the latter checks live Postgres and Redis connectivity)
 are what a platform's health check should point at. The dashboard (`apps/dashboard`) is
-a static Vite build (`pnpm --filter @otp-router/dashboard build` → `dist/`) meant for a
-static host (e.g. Vercel, Netlify, or an nginx container) pointed at the deployed API's
-origin via `VITE_API_URL`; it isn't part of `docker-compose.yml` because it's stateless
-and has no dependency on the other three services being colocated.
+an nginx container (`apps/dashboard/Dockerfile`) built from a static Vite build; it isn't
+part of `docker-compose.yml` because it's stateless and has no dependency on the other
+three services being colocated.
+
+**Env vars the onboarding work added:**
+
+| Var                    | Where              | Notes                                                                                                                                                       |
+| ---------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PASSWORD_PEPPER`      | API                | Required — boot fails without it (`R11.3`'s existing fail-fast behaviour). A different value from local, generated the same way as the other three peppers. |
+| `GOOGLE_CLIENT_ID`     | API                | Optional — Google sign-in registers its routes only if this and the secret are both set.                                                                    |
+| `GOOGLE_CLIENT_SECRET` | API                | Optional. Server-side only — never a build-time `VITE_*` var.                                                                                               |
+| `DASHBOARD_ORIGIN`     | API                | Already existed for CORS; also now the origin the Google redirect URI is built from.                                                                        |
+| `API_ORIGIN`           | Dashboard, runtime | nginx's proxy target for `/v1/*` — `nginx.conf.template`'s `envsubst` reads it at container start.                                                          |
+| `VITE_API_URL`         | Dashboard, build   | Set to **empty** now — the dashboard calls `/v1/*` same-origin through the proxy, not an absolute API origin.                                               |
+
+The dashboard and API being same-origin (via the proxy) is what lets the session cookie
+stay `SameSite=Lax` instead of the weaker `SameSite=None; Secure` that a genuine
+cross-origin setup would need.
 
 ## Known gaps
 

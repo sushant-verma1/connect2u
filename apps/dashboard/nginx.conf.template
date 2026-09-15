@@ -1,6 +1,9 @@
 # Rendered by the nginx image's own entrypoint (envsubst over /etc/nginx/templates/*.template)
-# so ${PORT} picks up Railway's injected value. $uri is left alone — the entrypoint only
-# substitutes variables that actually exist in the environment.
+# so ${PORT} and ${API_ORIGIN} pick up Railway's injected values. $uri/$http_host are
+# left alone — the entrypoint only substitutes variables that actually exist in the
+# environment, and envsubst runs once at container start, before nginx parses this
+# file, so proxy_pass below is a plain string by the time nginx sees it (no runtime
+# DNS-resolver config needed for a variable that's already gone).
 server {
     listen ${PORT};
     server_name _;
@@ -12,6 +15,17 @@ server {
     gzip_vary on;
     gzip_min_length 1024;
     gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # R13.2/B2 (report): same-origin proxy to the API — the session cookie's
+    # SameSite=Lax only reaches the API at all if the browser never sees a different
+    # origin. Trailing slashes on both sides matter: they're what makes proxy_pass
+    # substitute only the "/v1/" prefix, not consume the rest of the request path.
+    location /v1/ {
+        proxy_pass ${API_ORIGIN}/v1/;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     # Client-side routes (/trace/:id) have no file on disk — a direct visit or a shared
     # link must still get the SPA shell rather than a 404.

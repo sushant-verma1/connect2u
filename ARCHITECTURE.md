@@ -194,8 +194,11 @@ re-read state and no-op if terminal. Never assume cancellation succeeded.
 ## 7. Data model
 
 ```sql
-accounts            id, name, api_key_hash, api_key_prefix, status,
+accounts            id, name, email, password_hash, google_sub, status,
                     daily_cost_cap_micros, created_at
+
+api_keys            id, account_id, key_hash, key_prefix, created_at,
+                    last_used_at, revoked_at
 
 routing_policies    id, account_id, version, policy_json, active, created_at
 

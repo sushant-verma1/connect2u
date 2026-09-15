@@ -35,15 +35,44 @@ export const deliveryStatus = pgEnum("delivery_status", [
 // ARCHITECTURE.md §7. Only the three Phase 1 tables — routing_policies,
 // channel_capability, channel_scores, provider_rates, webhook_events, and
 // routing_decisions land with the phases that use them.
+//
+// R13.1/R13.6: the API key moved out to its own table (an account can hold more than
+// one) — see `apiKeys` below. `passwordHash` is nullable because a Google-only account
+// (R13.7) never sets one; `googleSub` is nullable for the reverse case. Never both
+// null at once in practice (signup requires one path or the other), but the schema
+// doesn't need to enforce that — the route handlers are the only writers.
 export const accounts = pgTable("accounts", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  apiKeyHash: text("api_key_hash").notNull(),
-  apiKeyPrefix: text("api_key_prefix").notNull().unique(),
+  email: text("email").notNull().unique(),
+  passwordHash: text("password_hash"),
+  // R13.7: Google's stable, non-reassignable subject identifier — never the email,
+  // which Google itself notes can change.
+  googleSub: text("google_sub").unique(),
   status: accountStatus("status").notNull().default("active"),
   dailyCostCapMicros: bigint("daily_cost_cap_micros", { mode: "number" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// R13.2/R13.3: one account, many keys. `keyHash` is argon2 (R7.4, shared primitive with
+// passwords — I11/AGENTS.md §11 forbids sharing *peppers* across purposes, not the
+// algorithm itself). `revokedAt` rather than deleting the row — DELETE /v1/keys/:id is
+// a soft revoke so `last_used_at` history survives it for the keys list.
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id),
+    keyHash: text("key_hash").notNull(),
+    keyPrefix: text("key_prefix").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [index("api_keys_account_id_idx").on(table.accountId)],
+);
 
 export const verifications = pgTable(
   "verifications",

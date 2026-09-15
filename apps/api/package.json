@@ -16,6 +16,7 @@
   "dependencies": {
     "@bull-board/api": "^9.10.0",
     "@bull-board/fastify": "^9.10.0",
+    "@fastify/cookie": "^11.1.2",
     "@fastify/cors": "^11.3.0",
     "@fastify/helmet": "^13.0.2",
     "@fastify/swagger": "^9.8.1",

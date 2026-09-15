@@ -2,7 +2,11 @@ import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { RedisContainer } from "@testcontainers/redis";
 import { createPgClient, type PgClient } from "@otp-router/db/client";
 import { runMigrations } from "@otp-router/db/migrate";
+import { insertAccount } from "@otp-router/db/repositories/accounts";
+import { insertApiKey } from "@otp-router/db/repositories/api-keys";
 import { Redis } from "ioredis";
+import { ulid } from "ulid";
+import { generateApiKey, hashApiKey } from "../../src/crypto/api-key.js";
 
 export type Infra = Readonly<{
   pg: PgClient;
@@ -60,9 +64,41 @@ export async function startInfra(): Promise<Infra> {
 export async function truncateAll(pg: PgClient, redis: Redis): Promise<void> {
   await Promise.all([
     pg`TRUNCATE TABLE
-      webhook_events, delivery_attempts, verifications, accounts,
+      webhook_events, delivery_attempts, verifications, api_keys, accounts,
       routing_policies, channel_capability, channel_scores, routing_decisions, provider_rates
       CASCADE`,
     redis.flushdb(),
   ]);
+}
+
+/**
+ * R13.1/R13.2: shared across every integration suite that needs an authenticated
+ * account — was seven near-identical copies (one per test file) before the
+ * `api_keys` split, each constructing the account row and its key by hand. One
+ * definition now, so a future schema change to either table is a one-file fix.
+ */
+export async function seedAccount(
+  pg: PgClient,
+  apiKeyPepper: string,
+  name: string,
+  overrides: { dailyCostCapMicros?: number } = {},
+): Promise<{ accountId: string; apiKey: string }> {
+  const { fullKey, prefix } = generateApiKey("test");
+  const keyHash = await hashApiKey(fullKey, apiKeyPepper);
+  const account = await insertAccount(pg, {
+    id: `acct_${ulid()}`,
+    name,
+    email: `${prefix}@test.invalid`,
+    status: "active",
+    ...(overrides.dailyCostCapMicros !== undefined
+      ? { dailyCostCapMicros: overrides.dailyCostCapMicros }
+      : {}),
+  });
+  await insertApiKey(pg, {
+    id: `key_${ulid()}`,
+    accountId: account.id,
+    keyHash,
+    keyPrefix: prefix,
+  });
+  return { accountId: account.id, apiKey: fullKey };
 }

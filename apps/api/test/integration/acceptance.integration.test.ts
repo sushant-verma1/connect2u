@@ -3,17 +3,20 @@ import type { FastifyInstance } from "fastify";
 import type { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { pino } from "pino";
-import { insertAccount } from "@otp-router/db/repositories/accounts";
 import { insertVerification } from "@otp-router/db/repositories/verifications";
 import { SimulatedProvider } from "@otp-router/providers/simulated";
 import { createDeliveryWorker } from "@otp-router/worker/queue/delivery-worker";
 import { createQueues } from "@otp-router/worker/queue/queues";
 import { buildApp } from "../../src/app.js";
-import { generateApiKey, hashApiKey } from "../../src/crypto/api-key.js";
 import { hmacHex } from "../../src/crypto/hmac.js";
 import { encryptCode } from "../../src/crypto/code-encryption.js";
 import { encryptPhone } from "../../src/crypto/phone-encryption.js";
-import { startInfra, truncateAll, type Infra } from "./harness.js";
+import {
+  seedAccount as seedAccountShared,
+  startInfra,
+  truncateAll,
+  type Infra,
+} from "./harness.js";
 
 /** Delivery is async now (R1.1.5) — tests poll instead of asserting immediately after /start. */
 async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
@@ -29,6 +32,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void
 const OTP_PEPPER = "test-otp-pepper";
 const PHONE_HASH_PEPPER = "test-phone-hash-pepper";
 const API_KEY_PEPPER = "test-api-key-pepper";
+const PASSWORD_PEPPER = "test-password-pepper";
 const PHONE_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
 const CODE_ENCRYPTION_KEY = Buffer.alloc(32, 10).toString("base64");
 
@@ -41,6 +45,7 @@ const config = {
   otpPepper: OTP_PEPPER,
   phoneHashPepper: PHONE_HASH_PEPPER,
   apiKeyPepper: API_KEY_PEPPER,
+  passwordPepper: PASSWORD_PEPPER,
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
   dashboardOrigin: "http://localhost:5173",
@@ -57,16 +62,7 @@ let apiKey: string;
 let otherApiKey: string;
 
 async function seedAccount(name: string): Promise<{ accountId: string; apiKey: string }> {
-  const { fullKey, prefix } = generateApiKey("test");
-  const apiKeyHash = await hashApiKey(fullKey, API_KEY_PEPPER);
-  const account = await insertAccount(infra.pg, {
-    id: `acct_${prefix}`,
-    name,
-    apiKeyHash,
-    apiKeyPrefix: prefix,
-    status: "active",
-  });
-  return { accountId: account.id, apiKey: fullKey };
+  return seedAccountShared(infra.pg, API_KEY_PEPPER, name);
 }
 
 beforeAll(async () => {

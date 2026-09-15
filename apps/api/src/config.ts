@@ -21,10 +21,13 @@ const envSchema = z.object({
   DATABASE_URL: z.string().url(),
   REDIS_URL: z.string().url(),
 
-  // Three separate peppers (ARCHITECTURE.md §9) — never shared between purposes.
+  // AGENTS.md §11: separate peppers, never shared between purposes. PASSWORD_PEPPER
+  // is R13.6's fourth — dashboard passwords are argon2 like API keys (same primitive,
+  // R7.4) but must not reuse API_KEY_PEPPER's pepper.
   OTP_PEPPER: z.string().min(1),
   PHONE_HASH_PEPPER: z.string().min(1),
   API_KEY_PEPPER: z.string().min(1),
+  PASSWORD_PEPPER: z.string().min(1),
 
   // AES-256-GCM key for `verifications.phone_encrypted` (R7.3: the active verification
   // record is the one place the real number is recoverable). Not one of the three HMAC
@@ -52,8 +55,18 @@ const envSchema = z.object({
 
   // Phase 8: the dashboard is a separate origin (Vite dev server) reading this API
   // directly (ARCHITECTURE.md — no BFF), so it needs an explicit CORS allowance.
-  // Defaults to Vite's own default port rather than a wildcard.
+  // Defaults to Vite's own default port rather than a wildcard. R13.7: also the origin
+  // Google redirects the browser back to — the dashboard proxies `/v1/*` through to
+  // this API (nginx.conf.template/vite.config.ts), so the redirect_uri registered in
+  // Google Cloud Console is this origin, never the API's own — reused rather than a
+  // second "public origin" var that would just have to be kept equal to this one.
   DASHBOARD_ORIGIN: z.string().url().default("http://localhost:5173"),
+
+  // R13.7: optional — like Meta's credentials, "Sign in with Google" only registers
+  // its routes once both are set (app.ts), so local dev without a Google Cloud project
+  // isn't blocked from booting.
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
 });
 
 export type Config = Readonly<{
@@ -65,6 +78,7 @@ export type Config = Readonly<{
   otpPepper: string;
   phoneHashPepper: string;
   apiKeyPepper: string;
+  passwordPepper: string;
   phoneEncryptionKey: string;
   codeEncryptionKey: string;
   metaPhoneNumberId?: string;
@@ -73,6 +87,8 @@ export type Config = Readonly<{
   metaWebhookVerifyToken?: string;
   metaTemplateName?: string;
   dashboardOrigin: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
 }>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -94,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     otpPepper: data.OTP_PEPPER,
     phoneHashPepper: data.PHONE_HASH_PEPPER,
     apiKeyPepper: data.API_KEY_PEPPER,
+    passwordPepper: data.PASSWORD_PEPPER,
     phoneEncryptionKey: data.PHONE_ENCRYPTION_KEY,
     codeEncryptionKey: data.CODE_ENCRYPTION_KEY,
     metaPhoneNumberId: data.META_PHONE_NUMBER_ID,
@@ -102,5 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     metaWebhookVerifyToken: data.META_WEBHOOK_VERIFY_TOKEN,
     metaTemplateName: data.META_TEMPLATE_NAME,
     dashboardOrigin: data.DASHBOARD_ORIGIN,
+    googleClientId: data.GOOGLE_CLIENT_ID,
+    googleClientSecret: data.GOOGLE_CLIENT_SECRET,
   };
 }

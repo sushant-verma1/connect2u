@@ -288,18 +288,54 @@ R10.6 is the screen that demonstrates the system rather than decorating it. Buil
 
 These must exist and pass. They are the requirements that matter most.
 
-| #   | Test                                                                  | Gate             |
-| --- | --------------------------------------------------------------------- | ---------------- |
-| T1  | 50 concurrent `/check` with the correct code → exactly one `verified` | **Phase 1 exit** |
-| T2  | Full happy path against real Postgres + Redis via Testcontainers      | Phase 1 exit     |
-| T3  | Expiry path and attempt-exhaustion path                               | Phase 1 exit     |
-| T4  | Idempotency-Key replay → original response, zero additional sends     | Phase 7          |
-| T5  | Late delivery after fallback fired → still verifies                   | **Phase 3 exit** |
-| T6  | Duplicate webhook → single state transition                           | **Phase 3 exit** |
-| T7  | Out-of-order webhooks → correct terminal state                        | **Phase 3 exit** |
-| T8  | Success webhook racing the fallback timer → one channel used          | **Phase 3 exit** |
-| T9  | Cross-tenant read attempt → denied                                    | Phase 1 exit     |
-| T10 | Same seed → identical simulation report                               | Phase 6 exit     |
-| T11 | Invalid webhook signature → `401`, no state change                    | Phase 4 exit     |
+| #   | Test                                                                               | Gate              |
+| --- | ---------------------------------------------------------------------------------- | ----------------- |
+| T1  | 50 concurrent `/check` with the correct code → exactly one `verified`              | **Phase 1 exit**  |
+| T2  | Full happy path against real Postgres + Redis via Testcontainers                   | Phase 1 exit      |
+| T3  | Expiry path and attempt-exhaustion path                                            | Phase 1 exit      |
+| T4  | Idempotency-Key replay → original response, zero additional sends                  | Phase 7           |
+| T5  | Late delivery after fallback fired → still verifies                                | **Phase 3 exit**  |
+| T6  | Duplicate webhook → single state transition                                        | **Phase 3 exit**  |
+| T7  | Out-of-order webhooks → correct terminal state                                     | **Phase 3 exit**  |
+| T8  | Success webhook racing the fallback timer → one channel used                       | **Phase 3 exit**  |
+| T9  | Cross-tenant read attempt → denied                                                 | Phase 1 exit      |
+| T10 | Same seed → identical simulation report                                            | Phase 6 exit      |
+| T11 | Invalid webhook signature → `401`, no state change                                 | Phase 4 exit      |
+| T12 | Signup → exactly one account, exactly one key                                      | Phase 10 exit     |
+| T13 | A session cannot call a verification endpoint; an API key cannot call `/v1/keys`   | **Phase 10 exit** |
+| T14 | A revoked key fails within the auth cache's stated 30s bound                       | Phase 10 exit     |
+| T15 | Google callback with a mismatched `state` → rejected, no session                   | Phase 10 exit     |
+| T16 | Google signup → account with `password_hash` null                                  | Phase 10 exit     |
+| T17 | Google sign-in on an email with an existing password → rejected, never auto-linked | Phase 10 exit     |
 
 T1 and T5–T8 are non-negotiable. They are the difference between this and a queue tutorial.
+
+---
+
+## 13. Self-serve onboarding
+
+Added after the phases above shipped — a human can sign up, log in, and manage API keys
+without a terminal, entirely from the dashboard. Two credential types stay disjoint: sessions
+authenticate the dashboard, API keys authenticate everything else, and neither substitutes for
+the other.
+
+| #     | Requirement                                                                                                                                                                                                                                                       | Tag |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --- |
+| R13.1 | `POST /v1/auth/signup` — email + password, creates an account and its first API key, returns the key once                                                                                                                                                         | MVP |
+| R13.2 | `POST /v1/auth/login`, `POST /v1/auth/logout` — httpOnly, SameSite=Lax session cookie. A session never authenticates `/v1/verification/*`; an API key never authenticates `/v1/keys` or the dashboard's trace route                                               | MVP |
+| R13.3 | `GET /v1/keys` lists prefix, created_at, last_used_at — never the full key. `POST /v1/keys` issues one, returned once                                                                                                                                             | MVP |
+| R13.4 | Passwords hashed with argon2, a pepper distinct from every other pepper (AGENTS.md §11); login rate-limited per email and per IP                                                                                                                                  | MVP |
+| R13.5 | `DELETE /v1/keys/:id` revokes a key and evicts it from the revoking instance's auth cache immediately; the ~30s bound on other instances is surfaced in the dashboard, not left implicit                                                                          | MVP |
+| R13.6 | Every existing account-scoped query keeps working unchanged — the session resolves to the same `account_id` shape as an API key                                                                                                                                   | MVP |
+| R13.7 | Google sign-in: authorization code + PKCE, server-side token exchange, `state` validated against a cookie set at redirect time. `accounts.google_sub` and a nullable `password_hash`. Redirect URIs come from config (`DASHBOARD_ORIGIN`), not a hardcoded string | V1  |
+| R13.8 | Account linking: **never auto-linked by email**, regardless of Google's `email_verified` — a matching email is always a conflict; linking from an authenticated session is a future feature, not built here                                                       | V1  |
+
+**Out of scope, deliberately:** email verification, password reset, team members/multiple users
+per account, plan tiers, billing. Noted in the README next to the reasoning.
+
+**Decision record (D1):** auto-linking on a matching email, even with `email_verified: true`, is
+an account-takeover vector — Google's flag attests it controls the mailbox, not that whoever
+registered that email _here_ first is the same person. An attacker can pre-register a victim's
+email with a password before the victim ever tries Google sign-in; `email_verified` is satisfied
+throughout and would not catch it. Signup and the Google callback both treat email as unique;
+a collision is a `409`, never a merge.

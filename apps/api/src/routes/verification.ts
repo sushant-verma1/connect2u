@@ -29,6 +29,7 @@ import { buildRoutingPlan } from "@otp-router/core/routing/build-plan";
 import type { ProviderRateRecord, RoutingInput } from "@otp-router/core/routing/types";
 import { fallbackTimerJobId } from "@otp-router/core/queue/fallback-job";
 import type { ApiKeyAuth } from "../auth/api-key-auth.js";
+import type { SessionAuth } from "../auth/session.js";
 import { encryptCode } from "../crypto/code-encryption.js";
 import { generateCode } from "../crypto/code.js";
 import { hmacHex } from "../crypto/hmac.js";
@@ -546,51 +547,97 @@ export function registerVerificationRoutes(
     },
     async (request, reply) => {
       const { id } = request.params;
-      const trace = await buildTrace(pg, { verificationId: id, accountId: request.account.id });
-      if (!trace) {
+      const body = await buildTraceResponseBody(pg, id, request.account.id);
+      if (!body) {
         return reply.code(404).send({ error: "not_found" });
       }
-
-      const { verification, routingDecision, attempts } = trace;
-
-      return reply.code(200).send({
-        verification_id: verification.id,
-        status: verification.status,
-        channel_chain: verification.channelChain,
-        channel_timeouts_ms: verification.channelTimeoutsMs,
-        attempts_used: verification.attemptsUsed,
-        max_attempts: verification.maxAttempts,
-        created_at: verification.createdAt.toISOString(),
-        expires_at: verification.expiresAt.toISOString(),
-        verified_at: verification.verifiedAt?.toISOString() ?? null,
-        verified_channel: verification.verifiedChannel,
-        time_to_verify_ms: verification.timeToVerifyMs,
-        routing_decision: routingDecision
-          ? {
-              considered: [...routingDecision.consideredJson],
-              chosen_channel: routingDecision.chosenChannel,
-              decision_log: parseDecisionLog(routingDecision.decisionLogJson),
-            }
-          : null,
-        attempts: attempts.map((attempt) => ({
-          id: attempt.id,
-          channel: attempt.channel,
-          provider: attempt.provider,
-          status: attempt.status,
-          error_code: attempt.errorCode,
-          cost_micros_at_send: attempt.costMicrosAtSend,
-          sent_at: attempt.sentAt?.toISOString() ?? null,
-          delivered_at: attempt.deliveredAt?.toISOString() ?? null,
-          failed_at: attempt.failedAt?.toISOString() ?? null,
-          timeout_at: attempt.timeoutAt?.toISOString() ?? null,
-          webhook_events: attempt.webhookEvents.map((event) => ({
-            provider: event.provider,
-            event_type: event.eventType,
-            signature_valid: event.signatureValid,
-            created_at: event.createdAt.toISOString(),
-          })),
-        })),
-      });
+      return reply.code(200).send(body);
     },
   );
+}
+
+/**
+ * R13.2/D2: the dashboard's trace screen needs a session-authenticated route, but
+ * `/v1/verification/*` must stay API-key-only (the spec's own rule: a session never
+ * authenticates a verification endpoint). Same response body, built by the same
+ * function below, a different path and preHandler — the two inline handlers stay
+ * separate only because each needs Fastify's own per-route Zod inference; the actual
+ * query-and-shape logic lives in exactly one place, not two copies that can drift.
+ */
+export function registerDashboardTraceRoute(
+  app: FastifyInstance,
+  pg: PgClient,
+  sessionAuth: SessionAuth,
+): void {
+  const server = app.withTypeProvider<ZodTypeProvider>();
+  server.get(
+    "/v1/dashboard/verifications/:id/trace",
+    {
+      preHandler: sessionAuth,
+      schema: {
+        params: traceParamsSchema,
+        response: { 200: traceResponseSchema, 401: errorResponseSchema, 404: errorResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params;
+      const body = await buildTraceResponseBody(pg, id, request.account.id);
+      if (!body) {
+        return reply.code(404).send({ error: "not_found" });
+      }
+      return reply.code(200).send(body);
+    },
+  );
+}
+
+async function buildTraceResponseBody(
+  pg: PgClient,
+  verificationId: string,
+  accountId: string,
+): Promise<z.infer<typeof traceResponseSchema> | null> {
+  const trace = await buildTrace(pg, { verificationId, accountId });
+  if (!trace) {
+    return null;
+  }
+
+  const { verification, routingDecision, attempts } = trace;
+
+  return {
+    verification_id: verification.id,
+    status: verification.status,
+    channel_chain: verification.channelChain,
+    channel_timeouts_ms: verification.channelTimeoutsMs,
+    attempts_used: verification.attemptsUsed,
+    max_attempts: verification.maxAttempts,
+    created_at: verification.createdAt.toISOString(),
+    expires_at: verification.expiresAt.toISOString(),
+    verified_at: verification.verifiedAt?.toISOString() ?? null,
+    verified_channel: verification.verifiedChannel,
+    time_to_verify_ms: verification.timeToVerifyMs,
+    routing_decision: routingDecision
+      ? {
+          considered: [...routingDecision.consideredJson],
+          chosen_channel: routingDecision.chosenChannel,
+          decision_log: parseDecisionLog(routingDecision.decisionLogJson),
+        }
+      : null,
+    attempts: attempts.map((attempt) => ({
+      id: attempt.id,
+      channel: attempt.channel,
+      provider: attempt.provider,
+      status: attempt.status,
+      error_code: attempt.errorCode,
+      cost_micros_at_send: attempt.costMicrosAtSend,
+      sent_at: attempt.sentAt?.toISOString() ?? null,
+      delivered_at: attempt.deliveredAt?.toISOString() ?? null,
+      failed_at: attempt.failedAt?.toISOString() ?? null,
+      timeout_at: attempt.timeoutAt?.toISOString() ?? null,
+      webhook_events: attempt.webhookEvents.map((event) => ({
+        provider: event.provider,
+        event_type: event.eventType,
+        signature_valid: event.signatureValid,
+        created_at: event.createdAt.toISOString(),
+      })),
+    })),
+  };
 }

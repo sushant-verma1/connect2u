@@ -4,18 +4,22 @@ import type { FastifyInstance } from "fastify";
 import type { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { pino } from "pino";
-import { insertAccount } from "@otp-router/db/repositories/accounts";
 import { insertVerification } from "@otp-router/db/repositories/verifications";
 import { insertDeliveryAttempt } from "@otp-router/db/repositories/delivery-attempts";
 import { createWebhookIngestWorker } from "@otp-router/worker/queue/webhook-worker";
 import { closeQueues, createQueues, type Queues } from "@otp-router/worker/queue/queues";
 import { buildApp } from "../../src/app.js";
-import { generateApiKey, hashApiKey } from "../../src/crypto/api-key.js";
-import { startInfra, truncateAll, type Infra } from "./harness.js";
+import {
+  seedAccount as seedAccountShared,
+  startInfra,
+  truncateAll,
+  type Infra,
+} from "./harness.js";
 
 const OTP_PEPPER = "test-otp-pepper";
 const PHONE_HASH_PEPPER = "test-phone-hash-pepper";
 const API_KEY_PEPPER = "test-api-key-pepper";
+const PASSWORD_PEPPER = "test-password-pepper";
 const PHONE_ENCRYPTION_KEY = Buffer.alloc(32, 9).toString("base64");
 const CODE_ENCRYPTION_KEY = Buffer.alloc(32, 10).toString("base64");
 const META_APP_SECRET = "test-meta-app-secret";
@@ -30,6 +34,7 @@ const config = {
   otpPepper: OTP_PEPPER,
   phoneHashPepper: PHONE_HASH_PEPPER,
   apiKeyPepper: API_KEY_PEPPER,
+  passwordPepper: PASSWORD_PEPPER,
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
   dashboardOrigin: "http://localhost:5173",
@@ -67,16 +72,8 @@ let webhookWorker: Worker;
 let accountId: string;
 
 async function seedAccount(name: string): Promise<string> {
-  const { fullKey, prefix } = generateApiKey("test");
-  const apiKeyHash = await hashApiKey(fullKey, API_KEY_PEPPER);
-  const account = await insertAccount(infra.pg, {
-    id: `acct_${prefix}`,
-    name,
-    apiKeyHash,
-    apiKeyPrefix: prefix,
-    status: "active",
-  });
-  return account.id;
+  const { accountId } = await seedAccountShared(infra.pg, API_KEY_PEPPER, name);
+  return accountId;
 }
 
 /** Seeds a `sent` delivery attempt with a Meta-shaped provider_message_id, bypassing
