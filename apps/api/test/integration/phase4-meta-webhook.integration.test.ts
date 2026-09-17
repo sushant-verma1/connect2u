@@ -38,6 +38,7 @@ const config = {
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
   dashboardOrigin: "http://localhost:5173",
+  trustProxy: "loopback,uniquelocal",
   metaAppSecret: META_APP_SECRET,
   metaWebhookVerifyToken: META_WEBHOOK_VERIFY_TOKEN,
 };

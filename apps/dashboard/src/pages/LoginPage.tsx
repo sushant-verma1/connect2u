@@ -1,12 +1,27 @@
 import { type FormEvent, useState } from "react";
-import { useNavigate, Navigate, Link } from "react-router-dom";
+import { useNavigate, Navigate, Link, useSearchParams } from "react-router-dom";
 import { login, googleSignInUrl, ApiError } from "../lib/api";
 import { useAuth } from "../lib/AuthContext";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 
+/**
+ * The Google callback is a top-level navigation, not a fetch — it can't render into
+ * this app, so it hands a reason back as `?error=` and this maps it (auth-google.ts).
+ * A lookup, not a passthrough: an unrecognised code renders nothing rather than
+ * reflecting whatever was in the URL.
+ */
+const GOOGLE_ERRORS: Record<string, string> = {
+  email_already_registered:
+    "That email already has a password account. Log in with your password below.",
+  // Usually just a slow sign-in — the one-time token backing it lasts 10 minutes — so
+  // this reads as "try again", not as a security warning.
+  invalid_state: "That sign-in attempt expired. Try signing in with Google again.",
+};
+
 export function LoginPage() {
   const navigate = useNavigate();
   const { auth, refresh } = useAuth();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -15,6 +30,8 @@ export function LoginPage() {
   if (auth.status === "authenticated") {
     return <Navigate to="/keys" replace />;
   }
+
+  const googleError = GOOGLE_ERRORS[searchParams.get("error") ?? ""];
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -42,6 +59,9 @@ export function LoginPage() {
           <CardTitle>Log in</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {googleError && (
+            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{googleError}</p>
+          )}
           <form onSubmit={handleSubmit} className="space-y-3">
             <input
               type="email"

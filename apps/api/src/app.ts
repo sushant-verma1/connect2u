@@ -34,6 +34,23 @@ export async function buildApp(
   bullConnection: Redis,
 ): Promise<FastifyInstance> {
   const app = Fastify({
+    // F1 (auth-audit): the dashboard container's nginx proxies `/v1/*` here, so without
+    // this the socket peer is always that proxy and every dashboard request shares one
+    // per-IP rate-limit bucket (`rl:signup-ip`, `rl:login-ip`) — a global lockout
+    // waiting to happen, invisible in dev where the Vite proxy is same-host.
+    //
+    // A trusted-peer list, never `true`: `true` walks the whole X-Forwarded-For chain
+    // and hands back its *leftmost* entry, which any client can write, so it would
+    // hand every caller a rate-limit bucket of its own choosing. Trusting a peer range
+    // instead means `request.ip` is the rightmost entry — the address the proxy itself
+    // observed and appended — and a request arriving from outside the range has its
+    // header ignored entirely.
+    //
+    // Not a hop count either: fastify@5.12.4 (lib/request.js:51) deliberately makes a
+    // numeric `trustProxy` trust *nothing* ("hop-count-only trust cannot validate the
+    // immediate peer"), so `trustProxy: 1` is silently a no-op and would leave this bug
+    // in place while looking fixed.
+    trustProxy: config.trustProxy,
     logger: {
       level: config.logLevel,
       transport: config.nodeEnv === "development" ? { target: "pino-pretty" } : undefined,

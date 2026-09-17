@@ -49,6 +49,7 @@ const config = {
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
   dashboardOrigin: "http://localhost:5173",
+  trustProxy: "loopback,uniquelocal",
 };
 const keys = { phoneEncryptionKey: PHONE_ENCRYPTION_KEY, codeEncryptionKey: CODE_ENCRYPTION_KEY };
 

@@ -25,6 +25,9 @@ const config = {
   phoneEncryptionKey: PHONE_ENCRYPTION_KEY,
   codeEncryptionKey: CODE_ENCRYPTION_KEY,
   dashboardOrigin: "http://localhost:5173",
+  // light-my-request injects from 127.0.0.1, so `loopback` makes the injected request a
+  // trusted hop — which is what lets the F1 suite drive X-Forwarded-For at all.
+  trustProxy: "loopback,uniquelocal",
 };
 
 let infra: Infra;
@@ -315,6 +318,56 @@ describe("R13.6 — credential-stuffing rate limits", () => {
   });
 });
 
+/**
+ * F1 (auth-audit): `trustProxy: 1` (app.ts) is what makes `request.ip` the address the
+ * one trusted proxy observed, rather than the proxy's own — without it every request
+ * arriving through the dashboard's nginx shares a single per-IP bucket. Signup's 5/hour
+ * (routes/auth.ts) is the tightest per-IP ceiling, so it's the cheapest one to prove
+ * bucketing with.
+ */
+describe("F1 — per-IP rate-limit buckets behind the proxy", () => {
+  const EXHAUSTED_IP = "203.0.113.1";
+  const FRESH_IP = "203.0.113.2";
+
+  function signupFrom(forwardedFor: string, email: string) {
+    return app.inject({
+      method: "POST",
+      url: "/v1/auth/signup",
+      headers: { "x-forwarded-for": forwardedFor },
+      payload: { email, password: "correct horse battery staple" },
+    });
+  }
+
+  it("two client IPs get separate buckets, and a spoofed X-Forwarded-For doesn't buy a fresh one", async () => {
+    // Burn the whole 5/hour allowance for one client IP.
+    for (let i = 0; i < 5; i++) {
+      const res = await signupFrom(EXHAUSTED_IP, `burn-${i}@example.com`);
+      expect(res.statusCode).toBe(201);
+    }
+    const sixth = await signupFrom(EXHAUSTED_IP, "sixth@example.com");
+    expect(sixth.statusCode).toBe(429);
+    expect(sixth.json().error).toBe("rate_limited_ip");
+
+    // A different client IP is a different bucket — the limit is per-IP, not global.
+    // This is the assertion that fails outright if trustProxy is unset: every request
+    // would resolve to the same socket peer and this would 429 with the one above.
+    const other = await signupFrom(FRESH_IP, "other-client@example.com");
+    expect(other.statusCode).toBe(201);
+
+    // The spoof: a client at EXHAUSTED_IP sends its own X-Forwarded-For claiming to be
+    // FRESH_IP. The proxy appends what it actually saw, so the header nginx forwards is
+    // "<forged>, <real>" — and one trusted hop resolves to the rightmost entry. The
+    // forged entry on the left is ignored and the exhausted bucket still applies.
+    const spoofed = await signupFrom(`${FRESH_IP}, ${EXHAUSTED_IP}`, "spoofer@example.com");
+    expect(spoofed.statusCode).toBe(429);
+    expect(spoofed.json().error).toBe("rate_limited_ip");
+
+    // …and the spoof didn't quietly spend FRESH_IP's allowance either.
+    const stillFresh = await signupFrom(FRESH_IP, "still-fresh@example.com");
+    expect(stillFresh.statusCode).toBe(201);
+  });
+});
+
 describe("R13.7 — Google sign-in", () => {
   const fakeUserinfo: GoogleUserinfo = {
     sub: "google-sub-123",
@@ -344,7 +397,11 @@ describe("R13.7 — Google sign-in", () => {
       url: "/v1/auth/google/callback?code=fake-code&state=not-the-real-state",
       headers: { cookie },
     });
-    expect(res.statusCode).toBe(400);
+    // F2 (auth-audit): redirects to the login page rather than rendering a 400 body —
+    // what the CSRF defense asserts is unchanged: no session, and the token exchange
+    // was never reached, so no account exists.
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe(`${config.dashboardOrigin}/login?error=invalid_state`);
     expect(cookieValueFrom(res.headers["set-cookie"], "sid")).toBeUndefined();
 
     const rows = await infra.pg`SELECT count(*)::int AS count FROM accounts`;
@@ -387,7 +444,14 @@ describe("R13.7 — Google sign-in", () => {
       url: `/v1/auth/google/callback?code=fake-code&state=${state}`,
       headers: { cookie },
     });
-    expect(res.statusCode).toBe(409);
+    // F2 (auth-audit): a redirect back to the login page carrying the reason, not a 409
+    // JSON body — this handler is only ever reached by a top-level navigation, which
+    // renders a body as a bare page with no way back. What D1 asserts is unchanged: no
+    // session is minted, and the existing row is untouched.
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe(
+      `${config.dashboardOrigin}/login?error=email_already_registered`,
+    );
     expect(cookieValueFrom(res.headers["set-cookie"], "sid")).toBeUndefined();
 
     // The existing row is untouched — still password-only, never linked to the sub.

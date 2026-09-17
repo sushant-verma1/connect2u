@@ -75,8 +75,14 @@ export function registerGoogleAuthRoutes(
       reply.clearCookie(OAUTH_TX_COOKIE, { path: OAUTH_TX_PATH });
 
       // R13.7: the state check is the CSRF defense on this callback — a request
-      // without a matching, single-use `oauth_tx` cookie never reaches the token
-      // exchange, regardless of whether `code` looks valid.
+      // without a matching `oauth_tx` cookie never reaches the token exchange,
+      // regardless of whether `code` looks valid.
+      //
+      // The clearCookie above is a browser-side instruction only: nothing records the
+      // state/verifier pair server-side, so a captured `oauth_tx` value replayed with
+      // its matching `code` would still pass this check. What actually prevents replay
+      // is PKCE plus Google's single-use authorization code — the second exchange of
+      // the same `code` fails at Google, whatever this cookie says.
       const [savedState, codeVerifier] = tx?.split(".") ?? [];
       if (
         !query.code ||
@@ -85,7 +91,12 @@ export function registerGoogleAuthRoutes(
         !codeVerifier ||
         query.state !== savedState
       ) {
-        return reply.code(400).send({ error: "invalid_state" });
+        // F2 (auth-audit): a redirect, same reasoning as the email conflict below —
+        // this branch is reached by a top-level navigation, and its most common cause
+        // is mundane rather than hostile: an `oauth_tx` cookie that aged out of its
+        // 10-minute TTL while the consent screen sat open. Rejecting is still correct
+        // (nothing reaches the token exchange); dead-ending in raw JSON was not.
+        return reply.redirect(`${config.dashboardOrigin}/login?error=invalid_state`, 302);
       }
 
       const userinfo = await exchangeCode({
@@ -109,9 +120,18 @@ export function registerGoogleAuthRoutes(
       // that whoever registered this email here is the same person. An attacker who
       // pre-registers a victim's email with a password would otherwise take over the
       // account the first time the victim signs in with Google.
+      //
+      // F2 (auth-audit): a redirect, not a 409 body — this handler is reached by a
+      // top-level browser navigation, so a JSON body renders as a bare page with no way
+      // back. The reason travels as a query param the login page maps to a message
+      // (LoginPage.tsx); it names no account and confirms nothing a caller didn't
+      // already supply, same as signup's 409.
       const existingByEmail = await findAccountByEmail(pg, email);
       if (existingByEmail) {
-        return reply.code(409).send({ error: "email_already_registered" });
+        return reply.redirect(
+          `${config.dashboardOrigin}/login?error=email_already_registered`,
+          302,
+        );
       }
 
       const account = await insertAccount(pg, {

@@ -62,6 +62,15 @@ const envSchema = z.object({
   // second "public origin" var that would just have to be kept equal to this one.
   DASHBOARD_ORIGIN: z.string().url().default("http://localhost:5173"),
 
+  // F1 (auth-audit): which peers may set X-Forwarded-For — the per-IP rate limits are
+  // only per-IP if this matches the real topology. Default covers every way this API is
+  // actually reached: `loopback` for the same-host Vite proxy in dev, `uniquelocal`
+  // (10/8, 172.16/12, 192.168/16, fc00::/7) for a docker bridge or Railway's internal
+  // IPv6 network. Public source addresses are deliberately absent — a client reaching
+  // this API directly is not a proxy and its X-Forwarded-For is ignored. Override with
+  // a comma-separated list of CIDRs/presets if the proxy sits outside those ranges.
+  TRUST_PROXY: z.string().min(1).default("loopback,uniquelocal"),
+
   // R13.7: optional — like Meta's credentials, "Sign in with Google" only registers
   // its routes once both are set (app.ts), so local dev without a Google Cloud project
   // isn't blocked from booting.
@@ -87,6 +96,7 @@ export type Config = Readonly<{
   metaWebhookVerifyToken?: string;
   metaTemplateName?: string;
   dashboardOrigin: string;
+  trustProxy: string;
   googleClientId?: string;
   googleClientSecret?: string;
 }>;
@@ -119,6 +129,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     metaWebhookVerifyToken: data.META_WEBHOOK_VERIFY_TOKEN,
     metaTemplateName: data.META_TEMPLATE_NAME,
     dashboardOrigin: data.DASHBOARD_ORIGIN,
+    trustProxy: data.TRUST_PROXY,
     googleClientId: data.GOOGLE_CLIENT_ID,
     googleClientSecret: data.GOOGLE_CLIENT_SECRET,
   };
