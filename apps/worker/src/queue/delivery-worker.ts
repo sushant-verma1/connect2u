@@ -12,12 +12,15 @@ import type { Queues } from "./queues.js";
 export function createDeliveryWorker(
   connection: Redis,
   pg: PgClient,
-  provider: Provider,
+  // Pick<>, not Provider — see DeliveryProcessorDeps.provider.
+  provider: Pick<Provider, "send" | "mapErrorCode">,
   logger: Logger,
   queues: Queues,
   keys: FallbackKeys,
   // Test-only override — see DeliveryProcessorDeps.channelTimeoutMs.
   channelTimeoutMs?: Readonly<Record<Channel, number>>,
+  // See DeliveryProcessorDeps.providerName.
+  providerName?: Readonly<Partial<Record<Channel, string>>>,
 ): Worker<DeliveryJobData> {
   const processDelivery = createDeliveryProcessor({
     pg,
@@ -28,6 +31,7 @@ export function createDeliveryWorker(
     fallbackQueue: queues.fallbackQueue,
     keys,
     channelTimeoutMs,
+    providerName,
   });
 
   const worker = new Worker<DeliveryJobData>(DELIVERY_QUEUE_NAME, processDelivery, {

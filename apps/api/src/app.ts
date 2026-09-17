@@ -122,5 +122,11 @@ export async function buildApp(
     );
   }
 
+  if (config.nodeEnv === "development") {
+    app.ready(() => {
+      app.log.info(`\n${app.printRoutes()}`);
+    });
+  }
+
   return app;
 }

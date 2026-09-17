@@ -27,6 +27,10 @@ export const PROVIDER_ERROR_CODES = [
   "rate_limited",
   "provider_error",
   "blocked",
+  // Meta's 24h customer service window is closed — only reachable when
+  // META_ALLOW_SESSION_MESSAGES is set (see MetaProvider/README). Distinct from
+  // not_on_channel: this says nothing about whether the recipient has WhatsApp.
+  "session_window_closed",
 ] as const;
 
 export type ProviderError = Readonly<{
@@ -46,11 +50,13 @@ export interface Provider {
 }
 
 // R5.6: which taxonomy codes are worth retrying. A wrong number or a blocked recipient
-// will never succeed on retry; a rate limit or a transient provider error might.
+// will never succeed on retry; a rate limit or a transient provider error might. A
+// closed session window won't reopen inside a job's retry backoff either.
 const PERMANENT_ERROR_CODES: ReadonlySet<ProviderError["code"]> = new Set([
   "invalid_number",
   "not_on_channel",
   "blocked",
+  "session_window_closed",
 ]);
 
 export function isPermanentError(code: ProviderError["code"]): boolean {
@@ -82,4 +88,34 @@ export function providerErrorCode(err: unknown): ProviderError["code"] {
     return err.code;
   }
   return "provider_error";
+}
+
+/** The provider's own raw error code (e.g. Meta's numeric `error.code`), structurally
+ * read off whatever adapter threw — so a mapped code like `invalid_number` is
+ * diagnosable in logs without guessing which raw code produced it. */
+export function providerRawCode(err: unknown): number | undefined {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "rawCode" in err &&
+    typeof err.rawCode === "number"
+  ) {
+    return err.rawCode;
+  }
+  return undefined;
+}
+
+/** The provider's own explanation of what was malformed (e.g. Meta's
+ * `error.error_data.details`) — generic codes like Meta's 100 are undiagnosable from
+ * `rawCode` alone without this. */
+export function providerErrorDetails(err: unknown): string | undefined {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "errorDetails" in err &&
+    typeof err.errorDetails === "string"
+  ) {
+    return err.errorDetails;
+  }
+  return undefined;
 }

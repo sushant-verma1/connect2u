@@ -17,7 +17,12 @@ import {
 import type { DeadLetterRecord, DeliveryJobData } from "@otp-router/core/queue/delivery-job";
 import { fallbackTimerJobId, type FallbackTimerJobData } from "@otp-router/core/queue/fallback-job";
 import { classifyCountry } from "@otp-router/core/pricing/country";
-import { isPermanentError, type Provider } from "@otp-router/providers/provider";
+import {
+  isPermanentError,
+  providerErrorDetails,
+  providerRawCode,
+  type Provider,
+} from "@otp-router/providers/provider";
 import { advanceOrFail, type FallbackKeys } from "../services/fallback.js";
 import { updateCapabilityForOutcome } from "../services/capability.js";
 import { enforceDailySpendCeiling } from "../services/toll-fraud.js";
@@ -33,7 +38,10 @@ function isFinalAttempt(job: Job<DeliveryJobData>): boolean {
 
 export type DeliveryProcessorDeps = Readonly<{
   pg: PgClient;
-  provider: Provider;
+  // Only `send`/`mapErrorCode` are ever called here — narrowed so apps/worker can hand
+  // this a per-channel delegate (real Meta for whatsapp, SimulatedProvider otherwise)
+  // without that delegate needing to implement webhook-route-only methods.
+  provider: Pick<Provider, "send" | "mapErrorCode">;
   logger: Logger;
   deadLetterQueue: Queue<DeadLetterRecord>;
   deliveryQueue: Queue<DeliveryJobData>;
@@ -44,6 +52,11 @@ export type DeliveryProcessorDeps = Readonly<{
   // global constant. This escape hatch exists purely so race tests can run on a
   // deterministic, fast clock instead of waiting out real 20s/30s timeouts.
   channelTimeoutMs?: Readonly<Partial<Record<Channel, number>>>;
+  // What to write to delivery_attempts.provider on a successful send — the row is
+  // inserted with a "simulated" placeholder before the worker knows which adapter will
+  // actually run (verification.ts / fallback.ts), so this corrects it to the truth.
+  // Missing entries default to "simulated".
+  providerName?: Readonly<Partial<Record<Channel, string>>>;
 }>;
 
 /**
@@ -62,6 +75,7 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
     fallbackQueue,
     keys,
     channelTimeoutMs,
+    providerName,
   } = deps;
 
   return async function processDelivery(job: Job<DeliveryJobData>): Promise<void> {
@@ -108,6 +122,7 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
         providerMessageId: result.providerMessageId,
         costMicrosAtSend: rate?.rateMicros,
         country: rateParams.country,
+        provider: providerName?.[channel] ?? "simulated",
       });
       log.info("delivery sent");
 
@@ -147,6 +162,8 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
       }
     } catch (err) {
       const errorCode = provider.mapErrorCode(err);
+      const rawProviderCode = providerRawCode(err);
+      const rawProviderErrorDetails = providerErrorDetails(err);
       const permanent = isPermanentError(errorCode);
       const final = permanent || isFinalAttempt(job);
 
@@ -163,20 +180,29 @@ export function createDeliveryProcessor(deps: DeliveryProcessorDeps) {
           failedAt: new Date().toISOString(),
           correlationId,
         });
-        // R3.6: the send itself never succeeded on this channel for this number.
-        await updateCapabilityForOutcome(
-          pg,
-          { verificationId, accountId, channel },
-          "failure",
-          new Date(),
-        );
+        // R3.6: the send itself never succeeded on this channel for this number — except
+        // session_window_closed, which says nothing about the recipient. That's our
+        // WABA's conversation state, not evidence the number can't be reached on
+        // WhatsApp; writing a capability failure for it would poison G3's routing
+        // signal with a fact about us, not them.
+        if (errorCode !== "session_window_closed") {
+          await updateCapabilityForOutcome(
+            pg,
+            { verificationId, accountId, channel },
+            "failure",
+            new Date(),
+          );
+        }
         // R4.4 trigger #1: a hard provider error — permanent, or transient with
         // retries exhausted — advances the fallback chain immediately rather than
         // waiting for a timer that was never scheduled (the send never succeeded).
         await advanceOrFail(pg, deliveryQueue, keys, { verificationId, accountId, correlationId });
       }
 
-      log.warn({ errorCode, permanent, final }, "delivery attempt failed");
+      log.warn(
+        { errorCode, rawProviderCode, rawProviderErrorDetails, permanent, final },
+        "delivery attempt failed",
+      );
 
       if (permanent) {
         throw new UnrecoverableError(errorCode);

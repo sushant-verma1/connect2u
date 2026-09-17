@@ -13,6 +13,14 @@ export class MetaProviderError extends Error {
   constructor(
     public readonly code: ProviderError["code"],
     message: string,
+    /** Meta's own numeric `error.code` (e.g. 131026) — kept alongside the mapped
+     * taxonomy code so a failure is diagnosable from logs without guessing which raw
+     * code a given mapped code came from. Undefined for non-HTTP failures. */
+    public readonly rawCode?: number,
+    /** Meta's `error.error_data.details` — a human-readable explanation of what was
+     * malformed. Generic codes like 100 are undiagnosable from `rawCode` alone; this
+     * is the field that actually says which parameter was wrong. */
+    public readonly errorDetails?: string,
   ) {
     super(message);
   }
@@ -27,18 +35,41 @@ export type MetaProviderOptions = Readonly<{
   templateName?: string;
   templateLanguageCode?: string;
   apiVersion?: string;
+  /**
+   * Sends a free-form session message (Meta's 24h customer service window) instead of
+   * an authentication template. Not the production pattern — production OTP is
+   * business-initiated and requires a template, which requires business verification
+   * (see README). Off by default; the recipient must have messaged the business
+   * number within the last 24h or the send fails with `session_window_closed`.
+   */
+  allowSessionMessages?: boolean;
   /** Injectable for tests; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
 }>;
+
+/** I4: strips a code from a provider-supplied error message before it's ever stored —
+ * `MetaProviderError.message` is Meta's own `error.message`, which the worker copies
+ * into dead-letter records, so this is the boundary that keeps a session-message send
+ * failure from leaking the code Meta echoed back. */
+function redactCode(message: string, code: string): string {
+  if (!code) return message;
+  return message.split(code).join("[redacted]");
+}
 
 // Meta Cloud API error codes worth distinguishing (see Meta's WhatsApp Cloud API error
 // reference). Everything else falls back to `provider_error` — the conservative,
 // retryable default.
 const META_ERROR_CODE_MAP: ReadonlyMap<number, ProviderError["code"]> = new Map([
-  [100, "invalid_number"], // invalid parameter — almost always a malformed `to`.
+  // 100 is Meta's generic OAuthException "invalid parameter" — it covers a malformed
+  // `to`, but just as often a malformed template/text payload, an unset field, or a
+  // credentials/phone_number_id problem. Nothing about the recipient specifically, so
+  // it must not map to invalid_number — that would poison G3's per-number capability
+  // score with a fact about our request, not about the recipient. `errorDetails`
+  // (Meta's `error_data.details`) is what actually says which parameter was wrong.
+  [100, "provider_error"],
   [131009, "invalid_number"], // parameter value is not valid.
   [131026, "not_on_channel"], // message undeliverable — recipient not reachable on WhatsApp.
-  [131047, "not_on_channel"], // re-engagement message outside the customer service window.
+  [131047, "session_window_closed"], // re-engagement message outside the 24h customer service window.
   [131031, "blocked"], // account restricted for policy violations.
   [368, "blocked"], // account restricted.
   [131056, "rate_limited"], // pair rate limit hit.
@@ -119,6 +150,7 @@ export class MetaProvider implements Provider {
   private readonly templateName: string;
   private readonly templateLanguageCode: string;
   private readonly apiVersion: string;
+  private readonly allowSessionMessages: boolean;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: MetaProviderOptions) {
@@ -128,6 +160,7 @@ export class MetaProvider implements Provider {
     this.templateName = options.templateName ?? "hello_world";
     this.templateLanguageCode = options.templateLanguageCode ?? "en_US";
     this.apiVersion = options.apiVersion ?? "v20.0";
+    this.allowSessionMessages = options.allowSessionMessages ?? false;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -139,6 +172,17 @@ export class MetaProvider implements Provider {
       );
     }
 
+    // README's "WhatsApp session messages (demo only)": allowSessionMessages trades the
+    // authentication template for a free-form text send inside Meta's 24h customer
+    // service window. Not the production path — kept behind an explicit flag so it's
+    // never reachable by accident.
+    const messagePayload = this.allowSessionMessages
+      ? { type: "text" as const, text: { body: params.code } }
+      : {
+          type: "template" as const,
+          template: { name: this.templateName, language: { code: this.templateLanguageCode } },
+        };
+
     const url = `https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}/messages`;
     const response = await this.fetchImpl(url, {
       method: "POST",
@@ -149,8 +193,7 @@ export class MetaProvider implements Provider {
       body: JSON.stringify({
         messaging_product: "whatsapp",
         to: params.phoneNumber.replace(/^\+/, ""),
-        type: "template",
-        template: { name: this.templateName, language: { code: this.templateLanguageCode } },
+        ...messagePayload,
       }),
     });
 
@@ -159,11 +202,19 @@ export class MetaProvider implements Provider {
     const error = isRecord(json.error) ? json.error : undefined;
 
     if (!response.ok) {
-      throw new MetaProviderError(
-        classifyMetaErrorCode(typeof error?.code === "number" ? error.code : undefined),
+      const rawCode = typeof error?.code === "number" ? error.code : undefined;
+      const errorData = isRecord(error?.error_data) ? error.error_data : undefined;
+      const rawDetails = typeof errorData?.details === "string" ? errorData.details : undefined;
+      const rawMessage =
         typeof error?.message === "string"
           ? error.message
-          : `Meta send failed with HTTP ${response.status}`,
+          : `Meta send failed with HTTP ${response.status}`;
+      throw new MetaProviderError(
+        classifyMetaErrorCode(rawCode),
+        // I4: never let the code we just sent end up embedded in a stored error message.
+        redactCode(rawMessage, params.code),
+        rawCode,
+        rawDetails ? redactCode(rawDetails, params.code) : undefined,
       );
     }
 

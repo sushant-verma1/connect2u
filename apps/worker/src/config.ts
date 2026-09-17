@@ -20,6 +20,21 @@ const envSchema = z.object({
   // number to the next channel in the fallback chain — never regenerated.
   PHONE_ENCRYPTION_KEY: base64Aes256Key(),
   CODE_ENCRYPTION_KEY: base64Aes256Key(),
+
+  // Mirrors apps/api's Meta config — all optional, since the worker falls back to
+  // SimulatedProvider for whatsapp whenever any of these is missing.
+  META_PHONE_NUMBER_ID: z.string().optional(),
+  META_ACCESS_TOKEN: z.string().optional(),
+  META_APP_SECRET: z.string().optional(),
+  // Off by default, on purpose (README "WhatsApp session messages (demo only)"): sends
+  // the code as a free-form text message inside Meta's 24h customer service window
+  // instead of an authentication template. Not the production pattern — enum rather
+  // than z.coerce.boolean() so a typo'd value fails loudly at boot instead of silently
+  // coercing to `true`.
+  META_ALLOW_SESSION_MESSAGES: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
 });
 
 export type Config = Readonly<{
@@ -30,6 +45,10 @@ export type Config = Readonly<{
   workerPort: number;
   phoneEncryptionKey: string;
   codeEncryptionKey: string;
+  metaPhoneNumberId?: string;
+  metaAccessToken?: string;
+  metaAppSecret?: string;
+  metaAllowSessionMessages: boolean;
 }>;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -50,5 +69,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     workerPort: data.WORKER_PORT,
     phoneEncryptionKey: data.PHONE_ENCRYPTION_KEY,
     codeEncryptionKey: data.CODE_ENCRYPTION_KEY,
+    metaPhoneNumberId: data.META_PHONE_NUMBER_ID,
+    metaAccessToken: data.META_ACCESS_TOKEN,
+    metaAppSecret: data.META_APP_SECRET,
+    metaAllowSessionMessages: data.META_ALLOW_SESSION_MESSAGES,
   };
 }

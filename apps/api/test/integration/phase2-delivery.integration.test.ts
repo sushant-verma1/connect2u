@@ -5,18 +5,21 @@ import { Redis } from "ioredis";
 import { pino } from "pino";
 import { findVerificationScoped } from "@otp-router/db/repositories/verifications";
 import { insertProviderRate } from "@otp-router/db/repositories/provider-rates";
+import { findCapabilityByPhoneHash } from "@otp-router/db/repositories/channel-capability";
 import { MAX_FALLBACK_CHANNELS } from "@otp-router/core/fallback/channel-chain";
-import type {
-  Provider,
-  ProviderError,
-  SendParams,
-  SendResult,
+import {
+  providerErrorCode,
+  type Provider,
+  type ProviderError,
+  type SendParams,
+  type SendResult,
 } from "@otp-router/providers/provider";
 import { SimulatedProvider } from "@otp-router/providers/simulated";
 import { DELIVERY_QUEUE_NAME, type DeliveryJobData } from "@otp-router/core/queue/delivery-job";
 import { createDeliveryProcessor } from "@otp-router/worker/processors/delivery";
 import { closeQueues, createQueues, type Queues } from "@otp-router/worker/queue/queues";
 import { buildApp } from "../../src/app.js";
+import { hashPhone } from "../../src/crypto/phone.js";
 import {
   seedAccount as seedAccountShared,
   startInfra,
@@ -409,6 +412,100 @@ describe("Phase 2 — async delivery", () => {
       await worker.close();
     }
   });
+
+  // The pair below is what stops the session_window_closed capability skip from
+  // silently regressing: case 1 fails if the skip is ever removed, case 2 fails if the
+  // capability write breaks entirely (in which case case 1 would pass for the wrong
+  // reason — "no record" either way).
+  it("session_window_closed on whatsapp advances to sms and writes no whatsapp capability record", async () => {
+    const provider = new ChannelSpecificProvider("session_window_closed");
+    const worker = new Worker<DeliveryJobData>(
+      DELIVERY_QUEUE_NAME,
+      createDeliveryProcessor({
+        pg: infra.pg,
+        provider,
+        logger,
+        deadLetterQueue: queues.deadLetterQueue,
+        deliveryQueue: queues.deliveryQueue,
+        fallbackQueue: queues.fallbackQueue,
+        keys,
+      }),
+      { connection: bullConnection },
+    );
+
+    try {
+      const startRes = await app.inject({
+        method: "POST",
+        url: "/v1/verification/start",
+        headers: { authorization: `Bearer ${apiKey}` },
+        payload: { phone_number: "+919876543210" },
+      });
+      const { verification_id: verificationId } = startRes.json();
+
+      await waitFor(async () => {
+        const attempts = await infra.pg`
+          SELECT channel, status FROM delivery_attempts
+          WHERE verification_id = ${verificationId} ORDER BY id
+        `;
+        return attempts.length === 2 && attempts[1]?.status === "sent";
+      });
+
+      const attempts = await infra.pg`
+        SELECT channel, status, error_code FROM delivery_attempts
+        WHERE verification_id = ${verificationId} ORDER BY id
+      `;
+      expect(attempts).toEqual([
+        { channel: "whatsapp", status: "failed", error_code: "session_window_closed" },
+        { channel: "sms", status: "sent", error_code: null },
+      ]);
+
+      const phoneHash = hashPhone("+919876543210", PHONE_HASH_PEPPER);
+      const capabilities = await findCapabilityByPhoneHash(infra.pg, phoneHash);
+      expect(capabilities.map((c) => c.channel)).not.toContain("whatsapp");
+    } finally {
+      await worker.close();
+    }
+  });
+
+  it("[control] a permanent whatsapp failure that isn't session_window_closed does write a whatsapp capability record", async () => {
+    const provider = new ChannelSpecificProvider("invalid_number");
+    const worker = new Worker<DeliveryJobData>(
+      DELIVERY_QUEUE_NAME,
+      createDeliveryProcessor({
+        pg: infra.pg,
+        provider,
+        logger,
+        deadLetterQueue: queues.deadLetterQueue,
+        deliveryQueue: queues.deliveryQueue,
+        fallbackQueue: queues.fallbackQueue,
+        keys,
+      }),
+      { connection: bullConnection },
+    );
+
+    try {
+      const startRes = await app.inject({
+        method: "POST",
+        url: "/v1/verification/start",
+        headers: { authorization: `Bearer ${apiKey}` },
+        payload: { phone_number: "+919876543210" },
+      });
+      const { verification_id: verificationId } = startRes.json();
+
+      await waitFor(async () => {
+        const attempts = await infra.pg`
+          SELECT status FROM delivery_attempts WHERE verification_id = ${verificationId}
+        `;
+        return attempts.length === 2 && attempts[1]?.status === "sent";
+      });
+
+      const phoneHash = hashPhone("+919876543210", PHONE_HASH_PEPPER);
+      const capabilities = await findCapabilityByPhoneHash(infra.pg, phoneHash);
+      expect(capabilities.map((c) => c.channel)).toContain("whatsapp");
+    } finally {
+      await worker.close();
+    }
+  });
 });
 
 /** Always takes `latencyMs` to answer — used to prove /start never waits on it. */
@@ -445,4 +542,24 @@ class HangOnceProvider implements Provider {
     this.completedSends.push(params);
     return { providerMessageId: `resumed_${params.code}` };
   }
+}
+
+/** Fails whatsapp with a configured taxonomy code every time; sms always succeeds.
+ * Models a real provider whose failure is channel-specific, the way MetaProvider's
+ * session-window closure only ever applies to whatsapp. */
+class ChannelSpecificProvider implements Provider {
+  constructor(private readonly whatsappErrorCode: ProviderError["code"]) {}
+
+  async send(params: SendParams): Promise<SendResult> {
+    if (params.channel === "whatsapp") {
+      throw { code: this.whatsappErrorCode };
+    }
+    return { providerMessageId: `sim_${params.channel}` };
+  }
+
+  // Not exercised by this test double — only `send()`/`mapErrorCode()` are under test.
+  verifySignature = (): boolean => false;
+  parseWebhook = (): readonly never[] => [];
+  // Structural — reads the `code` off whatever send() threw. No type assertions.
+  mapErrorCode = providerErrorCode;
 }

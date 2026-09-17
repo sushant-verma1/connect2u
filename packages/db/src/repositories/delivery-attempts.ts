@@ -103,6 +103,10 @@ export async function markDeliveryAttemptSent(
     providerMessageId: string;
     costMicrosAtSend?: number | null;
     country?: string | null;
+    // Corrects the "simulated" placeholder the row was inserted with — the insert
+    // happens before the worker knows which adapter will actually run this send.
+    // Optional so this stays backward-compatible; omitting it leaves the placeholder.
+    provider?: string;
   },
 ): Promise<DeliveryAttempt | null> {
   const db = drizzle(client);
@@ -116,6 +120,7 @@ export async function markDeliveryAttemptSent(
       costMicrosAtSend: params.costMicrosAtSend ?? null,
       // R3.7: what score-recompute groups on later — same classification as the cost lookup above.
       country: params.country ?? null,
+      ...(params.provider !== undefined ? { provider: params.provider } : {}),
     })
     .where(eq(deliveryAttempts.id, params.id))
     .returning();

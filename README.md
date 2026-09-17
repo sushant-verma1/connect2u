@@ -333,6 +333,42 @@ through `SimulatedProvider`. None of this touches the parts of the project that 
 actual point — routing, fallback, race handling, and the simulation harness are exercised
 against real Postgres, real Redis, and the real routing engine throughout.
 
+### WhatsApp session messages (demo only)
+
+**Production OTP is business-initiated and requires an authentication template**, which
+requires business verification — a registered business, documents, a dedicated phone
+number, a payment method. None of that exists here (see above), so `SimulatedProvider`
+is the delivery path for every test and every simulation run, and stays that way.
+
+There's a second, narrower thing `MetaProvider` can do: Meta's Cloud API allows
+free-form messages to a WhatsApp user for 24 hours after that user last messaged the
+business number (the "customer service window"). That's not an unofficial API or a
+workaround — it's a documented part of the same Cloud API `MetaProvider` already
+integrates against — but it is **a service message, not an authentication template**,
+and using it to carry an OTP is a demonstration mechanism, not the production pattern.
+It exists so this project can show a real code landing on a real phone at least once,
+the way the `hello_world` send above proves the API contract.
+
+It's reachable only when `META_ALLOW_SESSION_MESSAGES=true` is set (default `false`)
+**and** `META_PHONE_NUMBER_ID`/`META_ACCESS_TOKEN`/`META_APP_SECRET` are all configured
+on the worker — off by default, and not reachable by any of those alone. To use it:
+
+1. From the phone that should receive the code, send any message to the WABA's test
+   number first. This is what opens the 24h window, and it has to come _from_ the
+   recipient — the business can't open it. The window closes 24h after the recipient's
+   last inbound message, so re-send before demoing.
+2. That number must already be on the WABA's allowed-recipient list (Meta's API Setup
+   panel) — the same list `send:hello-world` above already reaches.
+3. Restart the worker after setting the env vars; they're read once at boot.
+
+A send outside the window fails with the `session_window_closed` error code (Meta error
+`131047`) — permanent, so the fallback chain advances to SMS immediately rather than
+retrying. That failure is deliberately **not** recorded against the number's WhatsApp
+capability score (`packages/core/src/routing/capability-update.ts`): a closed window is
+a fact about this WABA's conversation state, not about whether the recipient is
+reachable on WhatsApp, and folding it into G3's routing signal would be scoring the
+wrong thing.
+
 ## Running it locally, from a fresh clone
 
 One sequence, in order, verified against a genuinely empty database (`docker compose

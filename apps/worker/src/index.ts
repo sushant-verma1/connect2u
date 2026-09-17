@@ -1,5 +1,7 @@
 import { createPgClient } from "@otp-router/db/client";
 import { SimulatedProvider } from "@otp-router/providers/simulated";
+import { MetaProvider } from "@otp-router/providers/meta";
+import { providerErrorCode, type Provider, type SendParams } from "@otp-router/providers/provider";
 import {
   SCORE_RECOMPUTE_INTERVAL_MS,
   SCORE_RECOMPUTE_JOB_ID,
@@ -38,16 +40,57 @@ const fallbackConnection = createConnection();
 const webhookConnection = createConnection();
 const scoreRecomputeConnection = createConnection();
 
-// Real provider selection lands in Phase 4 (MetaProvider). Simulated is the primary
-// delivery path until then (R5.3).
-const provider = new SimulatedProvider();
+// R5.3: SimulatedProvider is the primary delivery path, always — this is what every
+// test and simulation run uses, and what handles sms and every whatsapp send that
+// isn't explicitly opted into the session-message path below.
+const simulatedProvider = new SimulatedProvider();
+
+// README "WhatsApp session messages (demo only)": real Meta delivery is reachable only
+// when the flag is on *and* all three credentials are present — never by accident, and
+// never because credentials alone were configured (that's what registers the webhook
+// route in apps/api; sending is a separate, stricter gate).
+const metaProvider =
+  config.metaAllowSessionMessages &&
+  config.metaPhoneNumberId &&
+  config.metaAccessToken &&
+  config.metaAppSecret
+    ? new MetaProvider({
+        phoneNumberId: config.metaPhoneNumberId,
+        accessToken: config.metaAccessToken,
+        appSecret: config.metaAppSecret,
+        allowSessionMessages: true,
+      })
+    : null;
+
+// Routes whatsapp to the real Meta send when wired, every other channel (and whatsapp
+// whenever Meta isn't wired) to SimulatedProvider. mapErrorCode is shared and structural
+// (packages/providers/src/provider.ts's providerErrorCode) — it classifies either
+// adapter's error class correctly without knowing which one threw.
+const provider: Pick<Provider, "send" | "mapErrorCode"> = {
+  send: (params: SendParams) =>
+    metaProvider && params.channel === "whatsapp"
+      ? metaProvider.send(params)
+      : simulatedProvider.send(params),
+  mapErrorCode: providerErrorCode,
+};
+const providerName = metaProvider ? { whatsapp: "meta" } : undefined;
+
 const keys = {
   phoneEncryptionKey: config.phoneEncryptionKey,
   codeEncryptionKey: config.codeEncryptionKey,
 };
 
 const queues = createQueues(queueConnection);
-const deliveryWorker = createDeliveryWorker(deliveryConnection, pg, provider, logger, queues, keys);
+const deliveryWorker = createDeliveryWorker(
+  deliveryConnection,
+  pg,
+  provider,
+  logger,
+  queues,
+  keys,
+  undefined,
+  providerName,
+);
 const fallbackWorker = createFallbackTimerWorker(fallbackConnection, pg, logger, queues, keys);
 const webhookWorker = createWebhookIngestWorker(webhookConnection, pg, logger, queues, keys);
 const scoreRecomputeWorker = createScoreRecomputeWorker(scoreRecomputeConnection, pg, logger);
@@ -70,7 +113,10 @@ const bullBoard =
           queues.scoreRecomputeQueue,
         ],
         config.workerPort,
-        provider,
+        // /dev/outbox reads SimulatedProvider.sentWithProviderIds specifically — the
+        // delegate above isn't a SimulatedProvider, so Bull Board always gets the real
+        // instance, never the per-channel wrapper.
+        simulatedProvider,
       )
     : null;
 
