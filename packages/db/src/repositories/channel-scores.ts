@@ -2,6 +2,7 @@ import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { isChannel, type Channel } from "@otp-router/core/fallback/channel-chain";
 import type { ChannelScoreRecord } from "@otp-router/core/routing/types";
+import { DEMO_ACCOUNT_ID } from "@otp-router/core/demo";
 import type { PgClient } from "../client.js";
 import { channelScores } from "../schema.js";
 
@@ -66,7 +67,21 @@ export type AggregatedChannelStat = Readonly<{
  * has `verified_channel = NULL` and is counted for no channel. `country` comes from
  * `delivery_attempts.country`, written at send time from the same two-bucket
  * classification G8's cost lookup already uses (apps/worker/src/processors/delivery.ts).
- * `windowStart`/`windowEnd` bound which attempts count.
+ * `windowStart`/`windowEnd` bound which attempts count — passed as ISO strings with an
+ * explicit `::timestamptz` cast, never as `Date` objects. `drizzle()` (called by every
+ * other repository in this package, on this same client) globally overwrites
+ * postgres.js's serializers for 1082/1083/1114/1184/1185 with an identity function, so
+ * a `Date` bound by the one raw tagged query left in this package reaches the wire
+ * protocol unserialized and throws "Received an instance of Date".
+ *
+ * Defence in depth, not a load-bearing guard today: the public demo
+ * (apps/api/src/routes/demo.ts) is a pure simulation over a Redis session — it never
+ * calls startVerification, so no `delivery_attempts` row for `DEMO_ACCOUNT_ID` should
+ * exist to aggregate in the first place. Kept anyway, so a real account's
+ * `channel_scores` (and `rankByScore`'s ordering) can never be skewed by demo traffic
+ * even if that ever changes. The demo has its own, session-scoped stand-in for this
+ * query (packages/simulator/src/score-tracker.ts) — it reads the real
+ * `DEMO_ACCOUNT_ID` routing policy, but never this table.
  */
 export async function computeChannelStats(
   client: PgClient,
@@ -91,8 +106,9 @@ export async function computeChannelStats(
     JOIN verifications v ON v.id = da.verification_id
     WHERE da.sent_at IS NOT NULL
       AND da.country IS NOT NULL
-      AND da.sent_at >= ${windowStart}
-      AND da.sent_at < ${windowEnd}
+      AND da.sent_at >= ${windowStart.toISOString()}::timestamptz
+      AND da.sent_at < ${windowEnd.toISOString()}::timestamptz
+      AND da.account_id <> ${DEMO_ACCOUNT_ID}
     GROUP BY da.channel, da.country
   `;
   return rows;

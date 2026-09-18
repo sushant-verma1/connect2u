@@ -19,7 +19,8 @@
     "./routing/apply-cost-ceiling": "./src/routing/apply-cost-ceiling.ts",
     "./routing/build-plan": "./src/routing/build-plan.ts",
     "./routing/capability-update": "./src/routing/capability-update.ts",
-    "./fraud/daily-spend": "./src/fraud/daily-spend.ts"
+    "./fraud/daily-spend": "./src/fraud/daily-spend.ts",
+    "./demo": "./src/demo.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

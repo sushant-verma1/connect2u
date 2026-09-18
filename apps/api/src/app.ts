@@ -11,6 +11,8 @@ import {
 } from "fastify-type-provider-zod";
 import type { PgClient } from "@otp-router/db/client";
 import { MetaProvider } from "@otp-router/providers/meta";
+import { findAccountById } from "@otp-router/db/repositories/accounts";
+import { DEMO_ACCOUNT_ID } from "@otp-router/core/demo";
 import type { Redis } from "ioredis";
 import type { Config } from "./config.js";
 import { createApiKeyAuth } from "./auth/api-key-auth.js";
@@ -20,6 +22,7 @@ import { closeQueues, createQueues } from "./queue/queues.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerGoogleAuthRoutes } from "./routes/auth-google.js";
 import { registerDeadLetterRoutes } from "./routes/dead-letters.js";
+import { registerDemoRoutes } from "./routes/demo.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerKeysRoutes } from "./routes/keys.js";
 import { registerMetaWebhookRoutes } from "./routes/meta-webhook.js";
@@ -99,6 +102,14 @@ export async function buildApp(
   registerDeadLetterRoutes(app, queues.deadLetterQueue, apiKeyAuth);
   registerWebhookRoutes(app, queues.webhookIngestQueue);
   registerRoutingPolicyRoutes(app, pg, apiKeyAuth);
+
+  // Same conditional-registration shape as the Google/Meta route groups below: an
+  // unseeded deployment (no `acct_demo` row — `pnpm --filter @otp-router/api
+  // seed:demo`) has no public demo surface at all, rather than a route that 404s on
+  // every call.
+  if (await findAccountById(pg, DEMO_ACCOUNT_ID)) {
+    registerDemoRoutes(app, pg, redis);
+  }
 
   // R13.2: the dashboard's credential — disjoint route set from apiKeyAuth's (§2 of
   // the report: a session never authenticates a verification endpoint, an API key

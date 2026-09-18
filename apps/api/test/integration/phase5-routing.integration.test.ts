@@ -1,9 +1,19 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { Redis } from "ioredis";
+import { Worker } from "bullmq";
+import { pino } from "pino";
+import { ulid } from "ulid";
 import { insertProviderRate } from "@otp-router/db/repositories/provider-rates";
 import { upsertCapability } from "@otp-router/db/repositories/channel-capability";
+import {
+  insertDeliveryAttempt,
+  markDeliveryAttemptSent,
+} from "@otp-router/db/repositories/delivery-attempts";
+import { insertVerification } from "@otp-router/db/repositories/verifications";
 import { closeQueues, createQueues, type Queues } from "@otp-router/worker/queue/queues";
+import { createScoreRecomputeProcessor } from "@otp-router/worker/processors/score-recompute";
+import { SCORE_RECOMPUTE_QUEUE_NAME } from "@otp-router/core/queue/score-recompute-job";
 import { buildApp } from "../../src/app.js";
 import { hashPhone } from "../../src/crypto/phone.js";
 
@@ -246,5 +256,81 @@ describe("Phase 5 — routing policy", () => {
       SELECT decision_log_json FROM routing_decisions WHERE verification_id = ${startRes.json().verification_id}
     `;
     expect(findSkipReason(decision?.decision_log_json, "whatsapp")).toMatch(/consecutive failures/);
+  });
+});
+
+// R3.8: `channel_scores` is written by exactly one thing, and until this test nothing
+// executed it — which is how `computeChannelStats` shipped in Phase 5 binding `Date`
+// objects into the one raw postgres.js query left in the repo and stayed broken
+// (docs/findings/postgres-date-serializers.md). Running the processor, rather than
+// `computeChannelStats` alone, is the point: the wrapper's own Date handling
+// (`windowStart`/`windowEnd` into `insertChannelScores`) is on this path too.
+describe("Phase 5 — score-recompute writes channel_scores", () => {
+  it("aggregates a verified attempt into a channel_scores row", async () => {
+    const { accountId } = await seedAccount("Scores");
+    const verificationId = `ver_${ulid()}`;
+    await insertVerification(infra.pg, {
+      id: verificationId,
+      accountId,
+      phoneHash: hashPhone("+919876543210", PHONE_HASH_PEPPER),
+      phoneEncrypted: "enc",
+      codeHmac: "hmac",
+      codeEncrypted: "enc",
+      channelChain: ["whatsapp"],
+      channelTimeoutsMs: { whatsapp: 10_000 },
+      expiresAt: new Date(Date.now() + 60_000),
+      metadataJson: {},
+      idempotencyKey: null,
+    });
+    const attempt = await insertDeliveryAttempt(infra.pg, {
+      id: `att_${ulid()}`,
+      verificationId,
+      accountId,
+      channel: "whatsapp",
+      provider: "simulated",
+      status: "queued",
+    });
+    await markDeliveryAttemptSent(infra.pg, {
+      id: attempt.id,
+      providerMessageId: `sim_${ulid()}`,
+      country: "IN",
+    });
+    await infra.pg`
+      UPDATE verifications
+      SET status = 'verified', verified_channel = 'whatsapp', verified_at = now()
+      WHERE id = ${verificationId}
+    `;
+
+    const processScoreRecompute = createScoreRecomputeProcessor(
+      infra.pg,
+      pino({ level: "silent" }),
+    );
+    const worker = new Worker(SCORE_RECOMPUTE_QUEUE_NAME, processScoreRecompute, {
+      connection: bullConnection,
+    });
+    try {
+      const completed = new Promise<void>((resolve) => worker.once("completed", () => resolve()));
+      await queues.scoreRecomputeQueue.add("recompute", {});
+      await completed;
+    } finally {
+      await worker.close();
+    }
+
+    const [score] = await infra.pg`
+      SELECT channel, country, verification_rate, p50_ms, window_start, window_end
+      FROM channel_scores
+    `;
+    expect(score?.channel).toBe("whatsapp");
+    expect(score?.country).toBe("IN");
+    expect(score?.verification_rate).toBe(1);
+    expect(score?.p50_ms).not.toBeNull();
+    // The processor's own `Date` handling: it passes `windowStart`/`windowEnd` through
+    // `insertChannelScores`, and a 24h span read back proves they serialized. Read as
+    // strings, not Dates — `drizzle()` clobbers postgres.js's *parsers* for timestamptz
+    // as well as its serializers, so a raw tagged query gets the wire text back.
+    const spanMs =
+      new Date(String(score?.window_end)).getTime() -
+      new Date(String(score?.window_start)).getTime();
+    expect(spanMs).toBe(24 * 60 * 60 * 1000);
   });
 });

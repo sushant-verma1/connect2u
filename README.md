@@ -316,6 +316,51 @@ callback. Linking an existing session to a Google identity (or vice versa) is a 
 feature — it just requires the linking request to come from _inside_ an authenticated
 session, where "this is the same person" is actually established. Not built here.
 
+## Public demo
+
+`/demo/routing` (dashboard) walks a stranger with no account through 3 calibration
+OTPs — they pick WhatsApp or SMS themselves — then 10 adaptive OTPs the real router
+picks on its own, adapting as it observes each one's outcome. `/demo` redirects here.
+Six new, unauthenticated, hard-rate-limited API routes back it. Calibration is a plain
+choice — the visitor picks a channel and it's recorded as delivered through it. Adaptive
+is not: the router alone decides the priority channel for each of the 10 attempts, and
+the visitor only ever has one channel available to verify through at a time — the
+priority channel for a real 5s window, then the fallback channel once that window has
+passed. `/attempt` and `/verify` are deliberately two calls, not one, precisely so
+nothing about _which channel resolves the attempt_ is ever client-supplied:
+
+| Route                                          | What it does                                                                                                                                                                                                                                                                      |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/demo/routing/start`                  | Starts a session: an unguessable session id (`crypto.randomBytes`, I6), held in Redis for 30 minutes.                                                                                                                                                                             |
+| `POST /v1/demo/routing/:sessionId/calibration` | Records the caller's channel choice for calibration attempt 1–3. 409s outside the calibration phase.                                                                                                                                                                              |
+| `POST /v1/demo/routing/:sessionId/attempt`     | Decides the next adaptive attempt's priority channel and parks it as pending — resolves nothing. No body schema exists for this route: there's no field a request could supply to influence the decision. 409s outside the adaptive phase, or if an attempt is already pending.   |
+| `POST /v1/demo/routing/:sessionId/verify`      | Resolves the pending attempt for the given `channel` — accepted only if it's the one currently available (the priority channel before its deadline, the fallback channel at/after it; §13 — checked against server wall-clock time, not trusted from the client). 409s otherwise. |
+| `GET /v1/demo/routing/:sessionId`              | The session's phase, full attempt history so far, and the pending attempt if one is in flight.                                                                                                                                                                                    |
+| `GET /v1/demo/routing/:sessionId/report`       | Analytics over the 10 adaptive attempts only (calibration is shown separately). 409s until the session is complete.                                                                                                                                                               |
+
+Every adaptive decision runs through `buildRoutingPlan` — the exact function
+`/v1/verification/start` calls — via `packages/simulator/src/demo-session.ts`, fed each
+channel's _win share_: how many of the attempts so far (calibration + adaptive) it was
+the one actually verified through, out of every attempt made. There is no second routing
+algorithm here, and no population/provider failure simulation either — there's exactly
+one real visitor per session, and what determines the outcome is which channel button
+they actually click, not a simulated population draw. Unlike the old `/v1/demo/*` this
+replaces, this demo never creates a verification, delivery attempt, or plaintext code —
+it's a pure simulation over a Redis-held session, so the I4 carve-out the old demo needed
+doesn't apply here at all (see `docs/security.md`).
+
+The demo account (`packages/core/src/demo.ts`'s `DEMO_ACCOUNT_ID`) is seeded
+separately — `pnpm --filter @otp-router/api seed:demo` — and only _has_ an active demo
+when that row exists: `app.ts` checks for it at boot and simply doesn't register
+`/v1/demo/routing/*` on an unseeded deployment. Its routing policy uses a 5s timeout on
+both channels (long enough to read a countdown, short enough that a recruiter actually
+sees a fallback happen), read from `routing_policies` like any account's, never
+hardcoded (I10) — production's own timeouts (`CHANNEL_TIMEOUT_MS`: 20s WhatsApp, 30s
+SMS) are untouched. The `channel_capability`/`channel_scores` isolation guards
+(`apps/worker/src/services/capability.ts`, `packages/db/src/repositories/channel-scores.ts`)
+that protected real accounts from the old demo's forced failures stay in place as
+defence in depth, even though this demo no longer writes to either table.
+
 ## Platform constraints (read this before asking "why is WhatsApp simulated?")
 
 **Authentication templates cannot be created on a test WABA.** Meta gates template

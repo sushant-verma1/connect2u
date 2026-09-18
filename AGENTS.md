@@ -46,7 +46,9 @@ means someone else won — return current state, do not throw.
 **I3. One code per verification, shared across all channels.** Never regenerate on fallback.
 
 **I4. Plaintext codes never leave memory.** Not to logs at any level, not to responses, not to
-error messages, not in dev.
+error messages, not in dev. No exception: the public demo (`/v1/demo/routing/*`) is a pure
+simulation that never generates a code at all, so the exception this invariant once carried for
+it — see "Demo carve-out" in `docs/security.md` — no longer applies to anything.
 
 **I5. Every query scoped by `account_id`.** No exceptions, from the first commit.
 

@@ -11,6 +11,7 @@
     "./processors/delivery": "./src/processors/delivery.ts",
     "./processors/fallback-timer": "./src/processors/fallback-timer.ts",
     "./processors/webhook-ingest": "./src/processors/webhook-ingest.ts",
+    "./processors/score-recompute": "./src/processors/score-recompute.ts",
     "./services/fallback": "./src/services/fallback.ts"
   },
   "scripts": {

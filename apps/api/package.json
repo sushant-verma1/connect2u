@@ -11,6 +11,7 @@
     "test": "vitest run",
     "seed": "tsx --env-file-if-exists=../../.env src/scripts/seed.ts",
     "seed:rates": "tsx --env-file-if-exists=../../.env src/scripts/seed-provider-rates.ts",
+    "seed:demo": "tsx --env-file-if-exists=../../.env src/scripts/seed-demo.ts",
     "send:hello-world": "tsx --env-file-if-exists=../../.env src/scripts/send-meta-hello-world.ts"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "@otp-router/core": "workspace:*",
     "@otp-router/db": "workspace:*",
     "@otp-router/providers": "workspace:*",
+    "@otp-router/simulator": "workspace:*",
     "argon2": "^0.41.1",
     "bullmq": "^6.3.4",
     "fastify": "^5.6.2",

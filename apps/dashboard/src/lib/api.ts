@@ -1,4 +1,12 @@
-import type { Trace } from "./types";
+import type {
+  DemoBeginAdaptiveResponse,
+  DemoChannel,
+  DemoReport,
+  DemoSessionState,
+  DemoStartResponse,
+  DemoStepResponse,
+  Trace,
+} from "./types";
 
 // R13.2/B2 (report): relative paths, not an absolute API origin — the dashboard and
 // API must be same-origin for the `sid` cookie's SameSite=Lax to be sent at all.
@@ -82,4 +90,52 @@ export function revokeKey(id: string): Promise<{ revoked: true; cache_ttl_second
 // can never call the API-key-only route, so the dashboard hits this one instead.
 export function fetchTrace(verificationId: string): Promise<Trace> {
   return apiFetch<Trace>(`/v1/dashboard/verifications/${encodeURIComponent(verificationId)}/trace`);
+}
+
+// /v1/demo/routing/* (apps/api/src/routes/demo.ts) — unauthenticated, no API key, no
+// session cookie. The session id these return is the only credential the browser
+// holds for a demo run; there is no account, no phone number, and no plaintext code
+// anywhere in this flow.
+export function startDemoRoutingSession(): Promise<DemoStartResponse> {
+  return apiFetch("/v1/demo/routing/start", { method: "POST", body: {} });
+}
+
+export function submitCalibrationChoice(
+  sessionId: string,
+  channel: DemoChannel,
+): Promise<DemoStepResponse> {
+  return apiFetch(`/v1/demo/routing/${encodeURIComponent(sessionId)}/calibration`, {
+    method: "POST",
+    body: { channel },
+  });
+}
+
+// Deliberately takes no channel argument — the server (not this client) decides the
+// routed channel for every adaptive attempt; there is no field to pass one through.
+// Only decides and parks the attempt as pending — it does not resolve anything (see
+// `verifyAdaptiveChannel`).
+export function beginAdaptiveAttempt(sessionId: string): Promise<DemoBeginAdaptiveResponse> {
+  return apiFetch(`/v1/demo/routing/${encodeURIComponent(sessionId)}/attempt`, { method: "POST" });
+}
+
+// The only call that can resolve a pending adaptive attempt. `channel` must be
+// whichever one the pending attempt currently allows (the priority channel before its
+// deadline, the fallback channel at/after it) — the server re-checks this itself
+// (§13), a rejected request here is not a bug in this client.
+export function verifyAdaptiveChannel(
+  sessionId: string,
+  channel: DemoChannel,
+): Promise<DemoStepResponse> {
+  return apiFetch(`/v1/demo/routing/${encodeURIComponent(sessionId)}/verify`, {
+    method: "POST",
+    body: { channel },
+  });
+}
+
+export function fetchDemoRoutingSession(sessionId: string): Promise<DemoSessionState> {
+  return apiFetch(`/v1/demo/routing/${encodeURIComponent(sessionId)}`);
+}
+
+export function fetchDemoRoutingReport(sessionId: string): Promise<DemoReport> {
+  return apiFetch(`/v1/demo/routing/${encodeURIComponent(sessionId)}/report`);
 }

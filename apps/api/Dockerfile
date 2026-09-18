@@ -20,6 +20,7 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY packages/core packages/core
 COPY packages/db packages/db
 COPY packages/providers packages/providers
+COPY packages/simulator packages/simulator
 ENV NODE_ENV=production
 EXPOSE 3000
 CMD ["pnpm", "--filter", "@otp-router/api", "start"]

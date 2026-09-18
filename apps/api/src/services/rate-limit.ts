@@ -199,3 +199,66 @@ export async function checkLoginRateLimits(
   }
   return null;
 }
+
+/**
+ * The `/v1/demo/routing/*` routes are unauthenticated and every session is a pure
+ * simulation — no phone number, no verification, nothing `RATE_LIMITS.perNumber`
+ * could key on — so per-IP plus a global cap are the whole control, not a fallback
+ * from a per-number limit that doesn't apply here. `demoGlobal` is a sliding window
+ * sized to roughly how long one session takes to click through, not a live in-flight
+ * counter — "N starts in the last window" over-counts concurrency (it still counts a
+ * session that finished early) but never under-counts it, so it can't admit more
+ * concurrent demos than the ceiling regardless.
+ * ponytail: sliding-window-over-window as a concurrency proxy, not a real in-flight
+ * counter — upgrade to an INCR/DECR pair around start/complete if the over-count ever
+ * actually matters.
+ */
+export const DEMO_RATE_LIMITS = {
+  perIpStart: { limit: 5, windowMs: 10 * 60 * 1000 }, // 5 demo starts / 10 min / IP
+  perIpRead: { limit: 120, windowMs: 60 * 1000 }, // ~1/s polling / min / IP
+  // 3 calibration + 10 adaptive attempts, each now two calls (begin the attempt, then
+  // verify a channel) = 23 minimum for one full run -- 30 leaves headroom for a client
+  // retry without opening the door to abuse.
+  perIpAct: { limit: 30, windowMs: 60 * 1000 },
+  global: { limit: 50, windowMs: 180 * 1000 }, // concurrency proxy, see above
+} as const;
+
+export type DemoRateLimitBreach = Readonly<{ scope: "ip" | "global"; retryAfterMs: number }>;
+
+export async function checkDemoStartRateLimits(
+  redis: Redis,
+  ip: string,
+): Promise<DemoRateLimitBreach | null> {
+  const scopes: readonly DemoRateLimitBreach["scope"][] = ["ip", "global"];
+  const specs: readonly SlidingWindowSpec[] = [
+    { key: `rl:demo-ip-start:${ip}`, ...DEMO_RATE_LIMITS.perIpStart },
+    { key: "rl:demo-global", ...DEMO_RATE_LIMITS.global },
+  ];
+  const results = await checkSlidingWindows(redis, specs);
+  for (let i = 0; i < scopes.length; i++) {
+    const result = results[i];
+    const scope = scopes[i];
+    if (scope && result && !result.allowed) {
+      return { scope, retryAfterMs: result.retryAfterMs };
+    }
+  }
+  return null;
+}
+
+export async function checkDemoReadRateLimit(redis: Redis, ip: string): Promise<RateLimitResult> {
+  return checkSlidingWindow(
+    redis,
+    `rl:demo-ip-read:${ip}`,
+    DEMO_RATE_LIMITS.perIpRead.limit,
+    DEMO_RATE_LIMITS.perIpRead.windowMs,
+  );
+}
+
+export async function checkDemoActRateLimit(redis: Redis, ip: string): Promise<RateLimitResult> {
+  return checkSlidingWindow(
+    redis,
+    `rl:demo-ip-act:${ip}`,
+    DEMO_RATE_LIMITS.perIpAct.limit,
+    DEMO_RATE_LIMITS.perIpAct.windowMs,
+  );
+}

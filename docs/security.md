@@ -133,6 +133,37 @@ an inspectable queue payload — at any level, any environment (`R7.2`).
   never appears in any captured log line. This is a regression test, not a one-time
   audit — it runs in CI on every change.
 
+### Demo carve-out (I4, AGENTS.md) — retired, not weakened
+
+The public demo used to be `/v1/demo/*`: a real verification under a seeded
+`DEMO_ACCOUNT_ID`, with `GET /v1/demo/:id` returning the plaintext code while it was
+`pending` — a deliberate, narrow, decided exception to I4. That demo is gone. The
+replacement, `/v1/demo/routing/*` (`apps/api/src/routes/demo.ts`, `packages/core/src/demo.ts`
+`DEMO_ACCOUNT_ID`), is a pure simulation over a Redis-held session: no verification, no
+delivery attempt, no `code_hmac`, no `code_encrypted` — `generateCode`/`encryptCode`
+are never called on this path at all. There is no plaintext code for I4 to have an
+opinion about, and therefore no carve-out: **I4 now holds for the demo without
+exception**, the same as everywhere else in the codebase.
+
+What's still true about `DEMO_ACCOUNT_ID` and still worth stating: it remains a fixed,
+seeded, isolated account with no API key, no password, and no linkable Google identity
+(`apps/api/src/scripts/seed-demo.ts`) — nothing authenticated can create anything under
+it. The demo route group's only database read is that account's active routing policy
+(`findActiveRoutingPolicy`, scoped by `account_id` like every other query, I5); it
+performs no writes at all. The defence-in-depth guards the old demo needed —
+`channel_capability`'s per-account skip in `apps/worker/src/services/capability.ts` and
+`channel_scores`'s `account_id <> DEMO_ACCOUNT_ID` exclusion in
+`packages/db/src/repositories/channel-scores.ts` — are kept rather than removed, on the
+principle that a guard costs nothing to leave in place and a future change to this
+route group that started writing under `DEMO_ACCOUNT_ID` again would still be caught by
+it.
+
+Verified by test: `apps/api/test/integration/demo-routing.integration.test.ts` asserts
+a full 13-attempt session leaves `verifications`, `delivery_attempts`,
+`routing_decisions`, and `channel_scores` at zero rows, and separately re-confirms the
+`channel_scores` exclusion guard still holds for any row that might exist under
+`DEMO_ACCOUNT_ID` regardless of how it got there.
+
 ## What's explicitly not covered here
 
 - **API key rotation with an overlap window** (`R7.8`) and **number/prefix blocklists**

@@ -12,7 +12,8 @@
     "./scenario-loader": "./src/scenario-loader.ts",
     "./runner": "./src/runner.ts",
     "./report": "./src/report.ts",
-    "./ab": "./src/ab.ts"
+    "./ab": "./src/ab.ts",
+    "./demo-session": "./src/demo-session.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

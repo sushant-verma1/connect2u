@@ -54,3 +54,75 @@ export type Trace = {
   } | null;
   attempts: TraceAttempt[];
 };
+
+// Mirrors apps/api/src/routes/demo.ts's /v1/demo/routing/* responses — hand-kept in
+// sync, same convention as `Trace` above.
+export type DemoChannel = "whatsapp" | "sms";
+export type DemoPhase = "calibration" | "adaptive" | "complete";
+
+export type DemoChannelOutcome = {
+  channel: DemoChannel;
+  outcome: "verified" | "timeout";
+  latency_ms: number;
+};
+
+export type DemoAttempt = {
+  attempt: number;
+  phase: "calibration" | "adaptive";
+  routed_channel: DemoChannel;
+  final_channel: DemoChannel;
+  fallback_used: boolean;
+  verified: true;
+  timeout_ms: number;
+  latency_ms: number;
+  primary: DemoChannelOutcome;
+  fallback: DemoChannelOutcome | null;
+  decision_log: DecisionLogEntry[];
+};
+
+// An adaptive attempt the router has decided on but the visitor hasn't resolved yet --
+// exactly one of `routed_channel`/`fallback_channel` is ever clickable at a time (§4 of
+// the interaction spec): `routed_channel` before `priority_deadline_ms`, otherwise
+// `fallback_channel`. The countdown itself is derived client-side from
+// `priority_deadline_ms - Date.now()`; the server is what actually enforces which
+// channel a `/verify` call may name.
+export type DemoPendingAdaptive = {
+  attempt: number;
+  routed_channel: DemoChannel;
+  fallback_channel: DemoChannel | null;
+  reason: string;
+  decision_log: DecisionLogEntry[];
+  timeout_ms: number;
+  started_at_ms: number;
+  priority_deadline_ms: number;
+};
+
+export type DemoPhaseCounts = { completed: number; total: number };
+
+export type DemoSessionSummary = {
+  phase: DemoPhase;
+  calibration: DemoPhaseCounts;
+  adaptive: DemoPhaseCounts;
+};
+
+export type DemoStartResponse = DemoSessionSummary & { session_id: string };
+export type DemoStepResponse = DemoSessionSummary & { attempt: DemoAttempt };
+export type DemoBeginAdaptiveResponse = DemoSessionSummary & { pending: DemoPendingAdaptive };
+export type DemoSessionState = DemoSessionSummary & {
+  session_id: string;
+  attempts: DemoAttempt[];
+  pending: DemoPendingAdaptive | null;
+};
+
+export type DemoReport = {
+  calibration: DemoAttempt[];
+  adaptive: DemoAttempt[];
+  channel_usage: { whatsapp: number; sms: number };
+  success_rate: { whatsapp: number; sms: number };
+  avg_latency_ms: { whatsapp: number | null; sms: number | null };
+  fallback_counts: { whatsapp_to_sms: number; sms_to_whatsapp: number };
+  routing_changes: number;
+  fallback_events: number;
+  final_channel: DemoChannel;
+  explanation: string;
+};

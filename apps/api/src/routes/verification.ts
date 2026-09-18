@@ -1,44 +1,21 @@
 import type { FastifyInstance } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { Redis } from "ioredis";
-import { ulid } from "ulid";
 import { z } from "zod";
 import type { PgClient } from "@otp-router/db/client";
-import {
-  insertVerification,
-  findVerificationScoped,
-} from "@otp-router/db/repositories/verifications";
-import {
-  findDeliveryAttemptsByVerification,
-  insertDeliveryAttempt,
-} from "@otp-router/db/repositories/delivery-attempts";
-import { findActiveRoutingPolicy } from "@otp-router/db/repositories/routing-policies";
-import { findCapabilityByPhoneHash } from "@otp-router/db/repositories/channel-capability";
-import { findLatestScoresByCountry } from "@otp-router/db/repositories/channel-scores";
-import { findApplicableRate } from "@otp-router/db/repositories/provider-rates";
-import { insertRoutingDecision } from "@otp-router/db/repositories/routing-decisions";
+import { findVerificationScoped } from "@otp-router/db/repositories/verifications";
+import { findDeliveryAttemptsByVerification } from "@otp-router/db/repositories/delivery-attempts";
 import { CHECK_OUTCOMES } from "@otp-router/core/state-machine/check-outcome";
-import {
-  CHANNEL_TIMEOUT_MS,
-  CHANNELS,
-  type Channel,
-} from "@otp-router/core/fallback/channel-chain";
-import { classifyCountry } from "@otp-router/core/pricing/country";
-import { DEFAULT_ROUTING_POLICY, routingPolicySchema } from "@otp-router/core/routing/policy";
-import { buildRoutingPlan } from "@otp-router/core/routing/build-plan";
-import type { ProviderRateRecord, RoutingInput } from "@otp-router/core/routing/types";
 import { fallbackTimerJobId } from "@otp-router/core/queue/fallback-job";
+import { classifyCountry } from "@otp-router/core/pricing/country";
 import type { ApiKeyAuth } from "../auth/api-key-auth.js";
 import type { SessionAuth } from "../auth/session.js";
-import { encryptCode } from "../crypto/code-encryption.js";
-import { generateCode } from "../crypto/code.js";
-import { hmacHex } from "../crypto/hmac.js";
 import { hashPhone, normalizePhoneNumber } from "../crypto/phone.js";
-import { encryptPhone } from "../crypto/phone-encryption.js";
 import { checkVerification } from "../services/check-verification.js";
 import { checkStartRateLimits } from "../services/rate-limit.js";
 import { checkPrefixVelocity, recordAndCheckCountryMix } from "../services/fraud-signals.js";
 import { findReplayedStart } from "../services/idempotency.js";
+import { startVerification } from "../services/start-verification.js";
 import { buildTrace } from "../services/trace.js";
 import type { Config } from "../config.js";
 import type { Queues } from "../queue/queues.js";
@@ -129,7 +106,7 @@ const traceAttemptSchema = z.object({
   webhook_events: z.array(traceWebhookEventSchema),
 });
 
-const traceResponseSchema = z.object({
+export const traceResponseSchema = z.object({
   verification_id: z.string(),
   status: z.enum(["pending", "verified", "expired", "burned", "failed"]),
   channel_chain: z.array(z.string()),
@@ -212,44 +189,6 @@ function parseDecisionLog(raw: unknown): ParsedDecisionLogEntry[] {
   return entries;
 }
 
-/** R3.2: RoutingInput.metadata is a flat string map — only the customer's string-valued
- * metadata fields are usable as match keys; a nested object or number can't be. */
-function stringMetadata(metadata: Record<string, unknown> | undefined): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const [key, value] of Object.entries(metadata ?? {})) {
-    if (typeof value === "string") {
-      result[key] = value;
-    }
-  }
-  return result;
-}
-
-/** G8/R3.7's provider-attribution convention: whatsapp is priced/scored as if sent via
- * Meta, sms via a generic SMS provider — the literal `delivery_attempts.provider` stays
- * "simulated" today (PROJECT.md's WABA constraint), but cost and country classification
- * reflect what the channel actually costs. */
-function rateProviderFor(channel: Channel): string {
-  return channel === "whatsapp" ? "meta" : "generic_sms";
-}
-
-async function loadProviderRates(
-  pg: PgClient,
-  country: string,
-): Promise<readonly ProviderRateRecord[]> {
-  const lookups = await Promise.all(
-    CHANNELS.map(async (channel) => {
-      const rate = await findApplicableRate(pg, {
-        provider: rateProviderFor(channel),
-        channel,
-        country,
-        messageType: "authentication",
-      });
-      return rate ? { channel, rateMicros: rate.rateMicros } : null;
-    }),
-  );
-  return lookups.filter((rate): rate is ProviderRateRecord => rate !== null);
-}
-
 export function registerVerificationRoutes(
   app: FastifyInstance,
   pg: PgClient,
@@ -306,7 +245,6 @@ export function registerVerificationRoutes(
       // Country-mix (R7.7) never rejects, so it just needs its own errors not to crash
       // the request — it's genuinely fire-and-forget, unlike the other two.
       const country = classifyCountry(normalizedPhone);
-      const metadata = stringMetadata(body.metadata);
 
       const [breach, escalated] = await Promise.all([
         checkStartRateLimits(redis, {
@@ -339,56 +277,17 @@ export function registerVerificationRoutes(
         return reply.code(403).send({ error: "account_under_review" });
       }
 
-      const routingInput: RoutingInput = {
-        accountId: request.account.id,
-        phoneHash,
-        country,
-        prefix: normalizedPhone,
-        risk: metadata.risk,
-        metadata,
-        requestedChannels: body.channels,
-        now: new Date(),
-      };
-
-      // R3.1/R3.3: whichever policy is active right now — a PUT to
-      // /v1/accounts/me/routing-policy changes this on the very next /start, no deploy.
-      // None of these four reads depend on each other — run them concurrently rather
-      // than serially, since R1.1.5 holds /start to under 100ms regardless.
-      const [policyRow, capability, scores, rates] = await Promise.all([
-        findActiveRoutingPolicy(pg, request.account.id),
-        findCapabilityByPhoneHash(pg, phoneHash),
-        findLatestScoresByCountry(pg, country),
-        loadProviderRates(pg, country),
-      ]);
-      const policy = policyRow
-        ? routingPolicySchema.parse(policyRow.policyJson)
-        : DEFAULT_ROUTING_POLICY;
-
-      const plan = buildRoutingPlan(policy, routingInput, capability, scores, rates);
-      const firstChannel = plan.orderedChannels[0];
-      if (!firstChannel) {
-        return reply.code(422).send({ error: "no_channel_available" });
-      }
-
-      const code = generateCode(body.code_length);
-      const expiresAt = new Date(Date.now() + body.ttl_seconds * 1000);
-      const verificationId = `ver_${ulid()}`;
-
+      let outcome;
       try {
-        await insertVerification(pg, {
-          id: verificationId,
+        outcome = await startVerification(pg, queues, config, {
           accountId: request.account.id,
-          phoneHash,
-          phoneEncrypted: encryptPhone(normalizedPhone, config.phoneEncryptionKey),
-          codeHmac: hmacHex(code, config.otpPepper),
-          // R2.3: encrypted, not hashed — this is what lets a later channel in the chain
-          // resend the exact same code (a fallback must never regenerate it).
-          codeEncrypted: encryptCode(code, config.codeEncryptionKey),
-          channelChain: [...plan.orderedChannels],
-          channelTimeoutsMs: { ...plan.timeouts },
-          expiresAt,
-          metadataJson: body.metadata ?? {},
+          normalizedPhone,
+          codeLength: body.code_length,
+          ttlSeconds: body.ttl_seconds,
+          metadata: body.metadata,
+          requestedChannels: body.channels,
           idempotencyKey: typeof idempotencyKey === "string" ? idempotencyKey : null,
+          correlationId: request.correlationId,
         });
       } catch (err) {
         // R1.1.6/T4: two genuinely concurrent requests carrying the same Idempotency-Key
@@ -410,52 +309,15 @@ export function registerVerificationRoutes(
         return reply.code(202).send(replayed);
       }
 
-      // R3.9: persisted whole — every channel the policy proposed, the one chosen, and
-      // the reason for every skip along the way.
-      const considered = plan.decisionLog
-        .filter((entry) => entry.stage === "match_policy" && entry.action === "considered")
-        .map((entry) => entry.channel)
-        .filter((channel): channel is Channel => channel !== undefined);
-      await insertRoutingDecision(pg, {
-        id: `rtd_${ulid()}`,
-        verificationId,
-        consideredJson: considered,
-        chosenChannel: firstChannel,
-        decisionLogJson: plan.decisionLog,
-      });
-
-      const attemptId = `att_${ulid()}`;
-      await insertDeliveryAttempt(pg, {
-        id: attemptId,
-        verificationId,
-        accountId: request.account.id,
-        channel: firstChannel,
-        provider: "simulated",
-        status: "queued",
-      });
-
-      // R1.1.5: the API never calls a provider — it only enqueues. `jobId: attemptId`
-      // makes re-enqueueing the same attempt a no-op instead of a duplicate job.
-      await queues.deliveryQueue.add(
-        "send",
-        {
-          attemptId,
-          verificationId,
-          accountId: request.account.id,
-          phoneNumber: normalizedPhone,
-          code,
-          channel: firstChannel,
-          correlationId: request.correlationId,
-          timeoutMs: plan.timeouts[firstChannel] ?? CHANNEL_TIMEOUT_MS[firstChannel],
-        },
-        { jobId: attemptId },
-      );
+      if (!outcome.ok) {
+        return reply.code(422).send({ error: outcome.error });
+      }
 
       return reply.code(202).send({
-        verification_id: verificationId,
+        verification_id: outcome.verificationId,
         status: "pending",
-        channel_attempted: firstChannel,
-        expires_at: expiresAt.toISOString(),
+        channel_attempted: outcome.firstChannel,
+        expires_at: outcome.expiresAt.toISOString(),
       });
     },
   );
@@ -590,7 +452,7 @@ export function registerDashboardTraceRoute(
   );
 }
 
-async function buildTraceResponseBody(
+export async function buildTraceResponseBody(
   pg: PgClient,
   verificationId: string,
   accountId: string,
