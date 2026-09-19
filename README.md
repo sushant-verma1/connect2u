@@ -2,27 +2,27 @@
 
 A provider-independent OTP verification router with automatic cross-channel fallback.
 
-A company integrates two REST endpoints — `POST /v1/verification/start`,
+An integrating application calls two REST endpoints — `POST /v1/verification/start`,
 `POST /v1/verification/check`. Underneath, the router picks the channel most likely to
 actually get a code into the user's hands (not just delivered — verified), falls back to
 another channel automatically when it doesn't, and learns per-number which channel works
 from every attempt it makes. It sits above providers rather than being one: WhatsApp
 direct to Meta at Meta's rate, Indian SMS through a domestic provider, international SMS
-through Twilio, all behind one contract that never changes for the customer.
+through a global provider, all behind one contract that never changes for the integrator.
 
-What's actually differentiated from "WhatsApp-first with SMS fallback" (Twilio Verify
-already does that): outcome-scored routing rather than an if-else chain, a decision log
-that explains every skip rather than a black box, and a routing policy an account can
-edit through the API with no deploy. See `PROJECT.md` for the full framing,
-`ARCHITECTURE.md` for system structure, and `REQUIREMENTS.md` for what's actually tested.
+What's differentiated from "WhatsApp-first with SMS fallback" (Twilio Verify already does
+that): outcome-scored routing rather than an if-else chain, a decision log that explains
+every skip rather than a black box, and a routing policy an account can edit through the
+API with no deploy. See `PROJECT.md` for the full framing, `ARCHITECTURE.md` for system
+structure, and `REQUIREMENTS.md` for what's actually tested.
 
 ## Architecture
 
 ```
                     ┌─────────────────────────────────────────┐
-   customer  ──────▶│  apps/api  (Fastify)                    │
+   integrator ─────▶│  apps/api  (Fastify)                    │
    POST /start      │  auth → validate → rate limit → route   │
-   POST /check      │  → persist → enqueue → 202               │
+   POST /check      │  → persist → enqueue → 202              │
                     └──────────────┬──────────────────────────┘
                                    │ enqueue
                           ┌────────▼────────┐
@@ -30,11 +30,11 @@ edit through the API with no deploy. See `PROJECT.md` for the full framing,
                           └────────┬────────┘
                                    │ consume
                     ┌──────────────▼──────────────────────────┐
-                    │  apps/worker                             │
-                    │  delivery · fallback-timer ·             │
-                    │  webhook-ingest · score-recompute        │
-                    └──────┬───────────────────────┬───────────┘
-                           │ send                   │ read/write
+                    │  apps/worker                            │
+                    │  delivery · fallback-timer ·            │
+                    │  webhook-ingest · score-recompute       │
+                    └──────┬───────────────────────┬──────────┘
+                           │ send                  │ read/write
                     ┌──────▼───────┐        ┌──────▼──────┐
                     │  providers   │        │  Postgres   │
                     │  meta·twilio·│        └─────────────┘
@@ -42,9 +42,9 @@ edit through the API with no deploy. See `PROJECT.md` for the full framing,
                     └──────▲───────┘
                            │ status webhooks
                     ┌──────┴──────────────────────┐
-                    │  apps/api /webhooks/:prov    │
-                    │  verify sig → dedupe → 200   │
-                    └──────────────────────────────┘
+                    │  apps/api /webhooks/:prov   │
+                    │  verify sig → dedupe → 200  │
+                    └─────────────────────────────┘
 ```
 
 Three processes: **api**, **worker**, and the **dashboard** static bundle. Postgres and
@@ -79,11 +79,11 @@ window because carrier-side SMS latency is itself more variable than a WhatsApp 
 API send, so a SMS-is-the-fallback path needs more slack before its own timer would fire
 in turn.
 
-These are fixed constants for now (`packages/core/src/fallback/channel-chain.ts`,
-`CHANNEL_TIMEOUT_MS`) applied identically to every account. `R4.5` calls for this to
-come from each account's routing policy instead — Phase 5's job. Until then, every
-account gets the same reasoning applied to it, which is at least a defensible default
-rather than an arbitrary one.
+These are fixed constants (`packages/core/src/fallback/channel-chain.ts`,
+`CHANNEL_TIMEOUT_MS`) applied identically to every account. `R4.5` calls for the value to
+come from each account's routing policy instead; until that lands, every account gets the
+same reasoning applied to it, which is at least a defensible default rather than an
+arbitrary one.
 
 **What actually enforces this, not just the number.** The timeout value is only half the
 story — the other half is that firing it must be safe to get wrong twice:
@@ -111,8 +111,8 @@ story — the other half is that firing it must be safe to get wrong twice:
 
 ## State machine
 
-Committed to `docs/state-machine.md` before lifecycle code was written, per PLAN.md
-Phase 0 — every ambiguity resolved on paper first.
+Committed to `docs/state-machine.md` before any lifecycle code was written — every
+ambiguity resolved on paper first.
 
 ```mermaid
 stateDiagram-v2
@@ -136,13 +136,13 @@ never a retry or an error. A late event (a delayed webhook, a fallback timer fir
 after success) arriving against a terminal verification is a no-op that returns `200`
 (I9). Full rules and rationale: `docs/state-machine.md`.
 
-## Phase 4 — real provider contract and webhooks
+## Provider contract and webhooks
 
-Reduced scope per `PROJECT.md`'s hard constraints: a test WABA can't create the
+Scope is reduced per `PROJECT.md`'s platform constraints: a test WABA cannot create the
 authentication templates a real OTP send needs, so `MetaProvider` is written against the
-real Cloud API contract and proven with a live `hello_world` send, but
+real Cloud API contract and proven with a live `hello_world` send, while
 `SimulatedProvider` remains the primary delivery path (`R5.3`). Twilio, authentication
-templates, and production WABA setup are all skipped entirely.
+templates, and production WABA setup are out of scope.
 
 **Signature verification runs before any parsing or database work.**
 `POST /v1/webhooks/meta` verifies `X-Hub-Signature-256` inside a Fastify content-type
@@ -152,7 +152,7 @@ signature calls back with an error carrying `statusCode: 401` and the request ne
 reaches the handler, the ingest queue, or Postgres (T11). Ordering is the actual
 security property here, not just the presence of an HMAC check: verifying a signature
 _after_ parsing means an attacker's malformed-but-unsigned JSON has already been
-deserialized by the time you reject it.
+deserialized by the time it is rejected.
 
 **Dedupe is a database unique constraint, not application bookkeeping.**
 `webhook_events` is keyed on `(provider, provider_message_id)` alone (not event type) —
@@ -179,8 +179,8 @@ and register the printed `https://*.trycloudflare.com/v1/webhooks/meta` URL (plu
 
 **Live proof.** With `META_PHONE_NUMBER_ID`, `META_ACCESS_TOKEN`, and
 `META_APP_SECRET` set, `MetaProvider` sends a real `hello_world` template — the
-recorded demo artifact proving the adapter talks to the actual Cloud API, not just its
-documented shape.
+demonstration that the adapter talks to the actual Cloud API, not just its documented
+shape.
 
 ## Simulation results
 
@@ -236,52 +236,58 @@ manufacture a bigger delta on the model as it stands.
 
 ## SDK
 
-`packages/sdk` is a typed client over the two customer-facing endpoints (`G9`):
+`packages/sdk` is a typed client over the two integrator-facing endpoints (`G9`):
 
 ```ts
 import { OtpRouterClient } from "@otp-router/sdk";
 
-const client = new OtpRouterClient({ apiKey: "sk_live_...", baseUrl: "https://api.example.com" });
+const client = new OtpRouterClient({
+  apiKey: "<YOUR_API_KEY>",
+  baseUrl: "https://<your-api-domain>",
+});
 
 // Idempotency-Key is auto-generated with crypto.randomUUID() when omitted (R1.1.6) —
 // a retried network call replays the original send instead of queuing a second one.
-const { verification_id } = await client.start({ phone_number: "+919876543210" });
+const { verification_id } = await client.start({
+  phone_number: "+<country-code><subscriber-number>",
+});
 
-const result = await client.check({ verification_id, code: "123456" });
+const result = await client.check({ verification_id, code: "<code-from-user>" });
 // or poll instead of prompting the user for a code synchronously:
-const final = await client.waitForResult(verification_id, { intervalMs: 2000, timeoutMs: 60_000 });
+const final = await client.waitForResult(verification_id, {
+  intervalMs: 2000,
+  timeoutMs: 60_000,
+});
 ```
 
 ## Out of scope
 
-Articulated scoping reads as maturity; unexplained gaps read as abandonment.
-
-| Excluded                                                    | Reason                                                                                                                                                                                                                                                                                                |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Excluded                                                    | Reason                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Ads or promotional content in messages**                  | Structurally impossible. WhatsApp authentication templates use a preset format with no URLs, media, or emojis, and only authentication templates may carry a passcode. Mixing promotional content risks reclassification of every template on the account. Indian SMS is blocked equivalently by DLT. |
-| Voice OTP                                                   | A whole telephony surface for one more chart bar                                                                                                                                                                                                                                                      |
-| Push channel                                                | Requires per-customer mobile SDK integration                                                                                                                                                                                                                                                          |
-| Email channel                                               | Least interesting adapter, deepest deliverability rabbit hole                                                                                                                                                                                                                                         |
-| Billing / payments                                          | Track cost, don't collect money                                                                                                                                                                                                                                                                       |
-| Template management UI                                      | Meta's console does this                                                                                                                                                                                                                                                                              |
-| Full read-model dashboard                                   | Phase 8 built the single-verification trace view (the screen that demonstrates the system); Overview/Cost/Failures/Providers would need a materialised view (`R10.1`) that doesn't exist yet, so those nav destinations were removed rather than left as dead links                                   |
-| Multi-region                                                | One region                                                                                                                                                                                                                                                                                            |
-| Magic links / passkeys                                      | Different product                                                                                                                                                                                                                                                                                     |
-| Any LLM anywhere                                            | Nothing here needs one; adding one weakens the project                                                                                                                                                                                                                                                |
-| Email verification                                          | A two-day onboarding scope; signup and login work without it. Also why Google account linking is never automatic — see below                                                                                                                                                                          |
-| Password reset                                              | No email sending exists yet to deliver a reset link to                                                                                                                                                                                                                                                |
-| Team members / multiple users per account                   | One account, one owner. The schema (`accounts` ↔ `api_keys`) already supports many keys per account; many _people_ per account is a different feature                                                                                                                                                 |
-| Plan tiers                                                  | Nothing to gate — every self-serve account behaves identically                                                                                                                                                                                                                                        |
-| Linking a Google identity onto an existing password account | Deliberately excluded, not merely deferred — see "Self-serve onboarding" below for why                                                                                                                                                                                                                |
+| Voice OTP                                                   | A whole telephony surface for one more chart bar                                                                                                                                                                                                                                                    |
+| Push channel                                                | Requires per-integrator mobile SDK integration                                                                                                                                                                                                                                                      |
+| Email channel                                               | Least interesting adapter, deepest deliverability rabbit hole                                                                                                                                                                                                                                       |
+| Billing / payments                                          | Track cost, don't collect money                                                                                                                                                                                                                                                                     |
+| Template management UI                                      | Meta's console does this                                                                                                                                                                                                                                                                            |
+| Full read-model dashboard                                   | The single-verification trace view is built (the screen that demonstrates the system); Overview/Cost/Failures/Providers would need a materialised view (`R10.1`) that doesn't exist yet, so those nav destinations were removed rather than left as dead links                                        |
+| Multi-region                                                | One region                                                                                                                                                                                                                                                                                          |
+| Magic links / passkeys                                      | Different product                                                                                                                                                                                                                                                                                   |
+| Any LLM anywhere                                            | Nothing here needs one; adding one weakens the project                                                                                                                                                                                                                                              |
+| Email verification                                          | Out of the onboarding scope; signup and login work without it. Also why Google account linking is never automatic — see below                                                                                                                                                                        |
+| Password reset                                              | No email sending exists yet to deliver a reset link to                                                                                                                                                                                                                                              |
+| Team members / multiple users per account                   | One account, one owner. The schema (`accounts` ↔ `api_keys`) already supports many keys per account; many _people_ per account is a different feature                                                                                                                                                |
+| Plan tiers                                                  | Nothing to gate — every self-serve account behaves identically                                                                                                                                                                                                                                      |
+| Linking a Google identity onto an existing password account | Deliberately excluded, not merely deferred — see "Self-serve onboarding" below for why                                                                                                                                                                                                               |
 
 ## Self-serve onboarding
 
-A human can sign up, log in, and manage API keys entirely from the dashboard — no
+A user can sign up, log in, and manage API keys entirely from the dashboard — no
 terminal, no `psql` insert. Two credential types, kept deliberately disjoint:
 
-- **API keys** (`sk_test_...`) — for servers. Authenticate `/v1/verification/*` and
-  every other server-to-server route. Argon2-hashed, a non-secret prefix identifies
-  the row.
+- **API keys** (`sk_test_…` / `sk_live_…`) — for servers. Authenticate
+  `/v1/verification/*` and every other server-to-server route. Argon2-hashed, a
+  non-secret prefix identifies the row.
 - **Sessions** (`sid` cookie) — for humans in the dashboard's browser tab. httpOnly,
   `SameSite=Lax`, 8h TTL. Authenticate `/v1/keys` and the dashboard's trace route.
 
@@ -300,124 +306,46 @@ surprise.
 server-side POST field during the token exchange and never reaches the browser. The
 `state` parameter is validated against a value stored in a short-lived cookie set at
 redirect time — a callback with a missing or mismatched `state` is rejected before any
-token exchange happens. Redirect URIs are read from `DASHBOARD_ORIGIN` (config), never
-hardcoded, since localhost and the Railway origin differ.
+token exchange happens. Identity comes solely from an authenticated call to Google's
+userinfo endpoint using an access token the server mints itself; no externally-supplied
+`id_token` is read or trusted anywhere. Redirect URIs are read from `DASHBOARD_ORIGIN`
+(config), never hardcoded, since local and deployed origins differ.
 
 **Account linking — never automatic.** Signing up with email+password and later
 signing in with Google using the same address does **not** merge the two. Google's
 `email_verified: true` only means Google controls that mailbox right now; it says
-nothing about whether whoever registered the email _here_, earlier, with a password,
-is the same person. Auto-linking on a matching email is an account-takeover path: an
-attacker pre-registers the victim's email with a password, the victim later signs in
-with Google, and if that merges into the attacker's already-known-password account,
-`email_verified: true` was satisfied the entire time and didn't stop it. So: a matching
-email is always a `409 email_already_registered`, on both signup and the Google
+nothing about whether whoever registered the email _in this system_, earlier, with a
+password, is the same person. Auto-linking on a matching email is an account-takeover
+path: an attacker pre-registers the victim's email with a password, the victim later
+signs in with Google, and if that merges into the attacker's already-known-password
+account, `email_verified: true` was satisfied the entire time and didn't stop it. So: a
+matching email is always a `409 email_already_registered`, on both signup and the Google
 callback. Linking an existing session to a Google identity (or vice versa) is a real
 feature — it just requires the linking request to come from _inside_ an authenticated
-session, where "this is the same person" is actually established. Not built here.
+session, where "this is the same person" is actually established. Not built.
 
-## Public demo
-
-`/demo/routing` (dashboard) walks a stranger with no account through 3 calibration
-OTPs — they pick WhatsApp or SMS themselves — then 10 adaptive OTPs the real router
-picks on its own, adapting as it observes each one's outcome. `/demo` redirects here.
-Six new, unauthenticated, hard-rate-limited API routes back it. Calibration is a plain
-choice — the visitor picks a channel and it's recorded as delivered through it. Adaptive
-is not: the router alone decides the priority channel for each of the 10 attempts, and
-the visitor only ever has one channel available to verify through at a time — the
-priority channel for a real 5s window, then the fallback channel once that window has
-passed. `/attempt` and `/verify` are deliberately two calls, not one, precisely so
-nothing about _which channel resolves the attempt_ is ever client-supplied:
-
-| Route                                          | What it does                                                                                                                                                                                                                                                                      |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/demo/routing/start`                  | Starts a session: an unguessable session id (`crypto.randomBytes`, I6), held in Redis for 30 minutes.                                                                                                                                                                             |
-| `POST /v1/demo/routing/:sessionId/calibration` | Records the caller's channel choice for calibration attempt 1–3. 409s outside the calibration phase.                                                                                                                                                                              |
-| `POST /v1/demo/routing/:sessionId/attempt`     | Decides the next adaptive attempt's priority channel and parks it as pending — resolves nothing. No body schema exists for this route: there's no field a request could supply to influence the decision. 409s outside the adaptive phase, or if an attempt is already pending.   |
-| `POST /v1/demo/routing/:sessionId/verify`      | Resolves the pending attempt for the given `channel` — accepted only if it's the one currently available (the priority channel before its deadline, the fallback channel at/after it; §13 — checked against server wall-clock time, not trusted from the client). 409s otherwise. |
-| `GET /v1/demo/routing/:sessionId`              | The session's phase, full attempt history so far, and the pending attempt if one is in flight.                                                                                                                                                                                    |
-| `GET /v1/demo/routing/:sessionId/report`       | Analytics over the 10 adaptive attempts only (calibration is shown separately). 409s until the session is complete.                                                                                                                                                               |
-
-Every adaptive decision runs through `buildRoutingPlan` — the exact function
-`/v1/verification/start` calls — via `packages/simulator/src/demo-session.ts`, fed each
-channel's _win share_: how many of the attempts so far (calibration + adaptive) it was
-the one actually verified through, out of every attempt made. There is no second routing
-algorithm here, and no population/provider failure simulation either — there's exactly
-one real visitor per session, and what determines the outcome is which channel button
-they actually click, not a simulated population draw. Unlike the old `/v1/demo/*` this
-replaces, this demo never creates a verification, delivery attempt, or plaintext code —
-it's a pure simulation over a Redis-held session, so the I4 carve-out the old demo needed
-doesn't apply here at all (see `docs/security.md`).
-
-The demo account (`packages/core/src/demo.ts`'s `DEMO_ACCOUNT_ID`) is seeded
-separately — `pnpm --filter @otp-router/api seed:demo` — and only _has_ an active demo
-when that row exists: `app.ts` checks for it at boot and simply doesn't register
-`/v1/demo/routing/*` on an unseeded deployment. Its routing policy uses a 5s timeout on
-both channels (long enough to read a countdown, short enough that a recruiter actually
-sees a fallback happen), read from `routing_policies` like any account's, never
-hardcoded (I10) — production's own timeouts (`CHANNEL_TIMEOUT_MS`: 20s WhatsApp, 30s
-SMS) are untouched. The `channel_capability`/`channel_scores` isolation guards
-(`apps/worker/src/services/capability.ts`, `packages/db/src/repositories/channel-scores.ts`)
-that protected real accounts from the old demo's forced failures stay in place as
-defence in depth, even though this demo no longer writes to either table.
-
-## Platform constraints (read this before asking "why is WhatsApp simulated?")
+## Platform constraints — why WhatsApp and SMS are simulated
 
 **Authentication templates cannot be created on a test WABA.** Meta gates template
-creation behind production setup — a registered business, business verification with
-documents, a dedicated phone number, and a payment method. None of that is available
-here. Consequence: WhatsApp is a **simulated channel** for every demo and every
-simulation run. `MetaProvider` is still written against the real Cloud API contract
-(signature verification, webhook parsing, send shape), and a live `hello_world` send —
-the one template a test WABA can send — is recorded as proof the integration actually
-talks to Meta's API, not just its documented shape.
+creation behind production setup: a registered business, business verification with
+supporting documents, a dedicated phone number, and a payment method. Consequence:
+WhatsApp is a **simulated channel** for every demo and every simulation run.
+`MetaProvider` is still written against the real Cloud API contract (signature
+verification, webhook parsing, send shape), and a live `hello_world` send — the one
+template a test WABA can send — demonstrates that the integration talks to Meta's API
+rather than only to its documented shape.
 
 Twilio trial accounts (30-day expiry, template-only sending) and TRAI DLT registration
-for real Indian SMS are similarly out of reach for an individual account; SMS also runs
-through `SimulatedProvider`. None of this touches the parts of the project that are the
-actual point — routing, fallback, race handling, and the simulation harness are exercised
-against real Postgres, real Redis, and the real routing engine throughout.
-
-### WhatsApp session messages (demo only)
-
-**Production OTP is business-initiated and requires an authentication template**, which
-requires business verification — a registered business, documents, a dedicated phone
-number, a payment method. None of that exists here (see above), so `SimulatedProvider`
-is the delivery path for every test and every simulation run, and stays that way.
-
-There's a second, narrower thing `MetaProvider` can do: Meta's Cloud API allows
-free-form messages to a WhatsApp user for 24 hours after that user last messaged the
-business number (the "customer service window"). That's not an unofficial API or a
-workaround — it's a documented part of the same Cloud API `MetaProvider` already
-integrates against — but it is **a service message, not an authentication template**,
-and using it to carry an OTP is a demonstration mechanism, not the production pattern.
-It exists so this project can show a real code landing on a real phone at least once,
-the way the `hello_world` send above proves the API contract.
-
-It's reachable only when `META_ALLOW_SESSION_MESSAGES=true` is set (default `false`)
-**and** `META_PHONE_NUMBER_ID`/`META_ACCESS_TOKEN`/`META_APP_SECRET` are all configured
-on the worker — off by default, and not reachable by any of those alone. To use it:
-
-1. From the phone that should receive the code, send any message to the WABA's test
-   number first. This is what opens the 24h window, and it has to come _from_ the
-   recipient — the business can't open it. The window closes 24h after the recipient's
-   last inbound message, so re-send before demoing.
-2. That number must already be on the WABA's allowed-recipient list (Meta's API Setup
-   panel) — the same list `send:hello-world` above already reaches.
-3. Restart the worker after setting the env vars; they're read once at boot.
-
-A send outside the window fails with the `session_window_closed` error code (Meta error
-`131047`) — permanent, so the fallback chain advances to SMS immediately rather than
-retrying. That failure is deliberately **not** recorded against the number's WhatsApp
-capability score (`packages/core/src/routing/capability-update.ts`): a closed window is
-a fact about this WABA's conversation state, not about whether the recipient is
-reachable on WhatsApp, and folding it into G3's routing signal would be scoring the
-wrong thing.
+for real Indian SMS have equivalent prerequisites — a registered business entity and
+approved sender headers and templates — so SMS also runs through `SimulatedProvider`.
+None of this touches the parts of the project that are the actual point: routing,
+fallback, race handling, and the simulation harness are exercised against real Postgres,
+real Redis, and the real routing engine throughout.
 
 ## Running it locally, from a fresh clone
 
 One sequence, in order, verified against a genuinely empty database (`docker compose
-down -v` first if you've run this before and want to confirm it from scratch):
+down -v` first to confirm it from scratch after a previous run):
 
 ```
 cp .env.example .env    # fill in the pepper/key values (see comments in the file)
@@ -435,31 +363,33 @@ pnpm --filter @otp-router/dashboard dev      # :5173
 ```
 
 (`pnpm dev` from the repo root runs api+worker together via `--parallel`, which is fine
-once you don't need to watch each one's own terminal output separately; the dashboard
-still needs its own `pnpm --filter @otp-router/dashboard dev` either way.)
+when each one's own terminal output isn't needed separately; the dashboard still needs
+its own `pnpm --filter @otp-router/dashboard dev` either way.)
 
 Every entry point — `dev` and `start` for both servers, plus `seed`, `seed:rates`,
 `db:migrate`, and `send:hello-world` — passes `--env-file-if-exists=../../.env` to
 `tsx`. Locally that reads config from the same root `.env`, so no script expects the
 shell to have exported everything already. In a deployed container there is no `.env`
-(`.dockerignore` excludes it) and Railway/Fly inject real environment variables instead;
-`-if-exists` makes the missing file a no-op rather than a boot failure, which is why
-`start` carries the same flag as `dev` rather than being the one entry point without it.
+(`.dockerignore` excludes it) and the platform injects real environment variables
+instead; `-if-exists` makes the missing file a no-op rather than a boot failure, which is
+why `start` carries the same flag as `dev` rather than being the one entry point without
+it.
 
 Requires Node >= 22.9 (`--env-file-if-exists`), which `engines` pins. A real environment
 variable always wins over a `.env` entry, so a stray file cannot shadow injected config.
 
-**Manual demo, without a real WhatsApp/SMS account.** `SimulatedProvider` never lets the
-API or dashboard see a plaintext code (`I4`) — the server hashes and encrypts it
-immediately and never logs it. So the question "how do I see the code that was 'sent',
-to actually type it into `/check`" needs its own answer, the same way Twilio's and
-Meta's own sandboxes give you a way to inspect an outbound test message: the worker's
-dev-only Fastify instance (`apps/worker/src/bull-board.ts`, only constructed when
-`NODE_ENV=development` — the exact same gate as Bull Board, never present in a
+### Manual demo, without a real WhatsApp or SMS account
+
+`SimulatedProvider` never lets the API or dashboard see a plaintext code (`I4`) — the
+server hashes and encrypts it immediately and never logs it. So the question "how do I
+see the code that was 'sent', to actually type it into `/check`" needs its own answer,
+the same way provider sandboxes give a way to inspect an outbound test message: the
+worker's dev-only Fastify instance (`apps/worker/src/bull-board.ts`, only constructed
+when `NODE_ENV=development` — the exact same gate as Bull Board, never present in a
 production build) exposes
 
 ```
-GET http://localhost:3001/dev/outbox?phone_number=%2B919876543210
+GET http://localhost:3001/dev/outbox?phone_number=%2B15551234567
 ```
 
 returning every `{ phoneNumber, code, channel, providerMessageId }` `SimulatedProvider`
@@ -467,39 +397,42 @@ has actually sent in this process, in memory only. It's an HTTP response body, n
 line — the code never appears in `pino` output anywhere (`R7.2`'s audit covers exactly
 this).
 
+> The examples below use `+15551234567` as a stand-in. Any valid E.164 number works:
+> `SimulatedProvider` never contacts a real device, so no number in these commands ever
+> receives a message. In URLs the leading `+` must be percent-encoded as `%2B`.
+
 **Straight-through demo (WhatsApp succeeds first try):**
 
 ```
 curl -X POST http://localhost:3000/v1/verification/start \
   -H "Authorization: Bearer <key from seed>" \
   -H "Content-Type: application/json" \
-  -d '{"phone_number":"+919876543210"}'
+  -d '{"phone_number":"+15551234567"}'
 # → { "verification_id": "ver_...", "channel_attempted": "whatsapp", ... }
 
-curl "http://localhost:3001/dev/outbox?phone_number=%2B919876543210"
-# → [{ "phoneNumber": "+919876543210", "code": "123456", "channel": "whatsapp",
+curl "http://localhost:3001/dev/outbox?phone_number=%2B15551234567"
+# → [{ "phoneNumber": "+15551234567", "code": "<6-digit-code>", "channel": "whatsapp",
 #      "providerMessageId": "sim_..." }]
 
 curl -X POST http://localhost:3000/v1/verification/check \
   -H "Authorization: Bearer <key from seed>" \
   -H "Content-Type: application/json" \
-  -d '{"verification_id":"ver_...","code":"123456"}'
+  -d '{"verification_id":"ver_...","code":"<6-digit-code>"}'
 # → { "status": "verified", ... }
 ```
 
 **Fallback demo (WhatsApp times out, SMS delivers, then the code verifies).** Left to
 itself, `SimulatedProvider` only ever sends — it never emits a delivery webhook the way
-a real Meta/Twilio callback would, so a channel it sent on will just sit until its
+a real Meta or Twilio callback would, so a channel it sent on will just sit until its
 fallback timer fires (20s for WhatsApp, 30s for SMS) and eventually the whole chain is
-exhausted (`failed`). To make a channel actually _deliver_ instead of timing out, you
-call `POST /v1/webhooks/simulated` yourself — the same endpoint a real provider's
-webhook would hit — using the `providerMessageId` the outbox just gave you for that
-attempt:
+exhausted (`failed`). To make a channel actually _deliver_ instead of timing out, call
+`POST /v1/webhooks/simulated` directly — the same endpoint a real provider's webhook
+would hit — using the `providerMessageId` the outbox just returned for that attempt:
 
 ```
 curl -X POST http://localhost:3000/v1/verification/start \
   -H "Authorization: Bearer <key from seed>" -H "Content-Type: application/json" \
-  -d '{"phone_number":"+919876543210"}'
+  -d '{"phone_number":"+15551234567"}'
 # → { "verification_id": "ver_...", "channel_attempted": "whatsapp", ... }
 
 # Wait ~20s for the WhatsApp fallback timer to fire (do nothing — no webhook for this one).
@@ -511,18 +444,18 @@ not as two commands typed separately. `POST /v1/webhooks/simulated` returning
 conditional `UPDATE` has run yet (`R6.4`: verify → dedupe → **200 fast**, process on the
 queue after). That gap is normal and correct — it's the same "respond fast, do the real
 work async" shape as every other webhook path in this project — but it means the time
-between "you have the `providerMessageId`" and "the webhook is actually applied in
+between "the `providerMessageId` is available" and "the webhook is actually applied in
 Postgres" is real time, not zero. Splitting outbox-read and webhook-post into two
-separate manual commands (as earlier revisions of this doc did) adds exactly the kind of
-human latency — reading output, copy-pasting an ID, retyping a second curl — that can
-burn through the 20s WhatsApp / 30s SMS window before the webhook ever reaches Postgres,
-at which point the fallback timer wins the row first and legitimately advances the
-chain. One combined command removes that gap:
+separate manual commands adds exactly the kind of human latency — reading output,
+copy-pasting an ID, retyping a second curl — that can burn through the 20s WhatsApp /
+30s SMS window before the webhook ever reaches Postgres, at which point the fallback
+timer wins the row first and legitimately advances the chain. One combined command
+removes that gap:
 
 **bash** (`jq` required):
 
 ```bash
-MSG_ID=$(curl -s "http://localhost:3001/dev/outbox?phone_number=%2B919876543210" \
+MSG_ID=$(curl -s "http://localhost:3001/dev/outbox?phone_number=%2B15551234567" \
   | jq -r '[.[] | select(.channel=="sms")] | last | .providerMessageId')
 curl -s -X POST http://localhost:3000/v1/webhooks/simulated \
   -H "Content-Type: application/json" \
@@ -534,7 +467,7 @@ curl -s -X POST http://localhost:3000/v1/webhooks/simulated \
 **PowerShell:**
 
 ```powershell
-$msg = (Invoke-RestMethod "http://localhost:3001/dev/outbox?phone_number=%2B919876543210") |
+$msg = (Invoke-RestMethod "http://localhost:3001/dev/outbox?phone_number=%2B15551234567") |
   Where-Object { $_.channel -eq "sms" } | Select-Object -Last 1
 Invoke-RestMethod -Method Post "http://localhost:3000/v1/webhooks/simulated" `
   -ContentType "application/json" `
@@ -550,25 +483,24 @@ reaches the server as a plausible-looking ID, gets `{"accepted":true}` like any 
 event (`R6.4`), and then matches no delivery attempt: the worker logs `webhook event for
 unknown provider_message_id — no-op` and changes nothing (`R6.5`). That is the intended
 behaviour, but from the client side it is indistinguishable from a webhook that worked,
-so check the worker log if a channel you "delivered" still times out.
+so check the worker log if a channel that was "delivered" still times out.
 
 ```
 curl -X POST http://localhost:3000/v1/verification/check \
   -H "Authorization: Bearer <key from seed>" -H "Content-Type: application/json" \
-  -d '{"verification_id":"ver_...","code":"123456"}'
+  -d '{"verification_id":"ver_...","code":"<6-digit-code>"}'
 # → { "status": "verified", ... }
 ```
 
-No env var or scenario config turns this on — `POST /v1/webhooks/simulated` (added in
-Phase 3/4 for the fallback and dedupe tests, `apps/api/src/routes/webhooks.ts`) is
-always there; the manual demo just calls it directly instead of a real provider calling
-it. `event_type: "failed"` works the same way if you want to demo a hard provider error
-advancing the chain instead of a timeout.
+No env var or scenario config turns this on — `POST /v1/webhooks/simulated`
+(`apps/api/src/routes/webhooks.ts`) is always registered; the manual demo just calls it
+directly instead of a real provider calling it. `event_type: "failed"` works the same way
+to demo a hard provider error advancing the chain instead of a timeout.
 
 Open `http://localhost:5173/trace/<verification_id>` in the dashboard to see the same
 verification's routing decision, attempts, and webhook events end to end — this is
 where the WhatsApp `timed_out` / SMS `delivered` split from the fallback demo above is
-easiest to actually look at.
+easiest to inspect.
 
 ### Sign in with Google (optional)
 
@@ -580,24 +512,24 @@ are both set (same conditional-registration pattern as the Meta webhook route).
 
 1. [console.cloud.google.com](https://console.cloud.google.com) → new project.
 2. **APIs & Services → OAuth consent screen** → User type **External** → fill in an
-   app name and your own email as both support and developer contact → **Save**.
-   Scopes: `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile` — all
-   non-sensitive, no Google review needed. Leave publishing status **Testing** and add
-   your own Google account under **Test users**.
+   app name and a designated developer/support email address as both contacts →
+   **Save**. Scopes: `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile` —
+   all non-sensitive, no Google review needed. Publishing status can stay **Testing**,
+   with the Google accounts used for testing added under **Test users**.
 3. **Credentials → Create credentials → OAuth client ID → Web application.**
-4. **Authorized redirect URIs** — exact, byte-for-byte. This is the dashboard's origin
-   (`DASHBOARD_ORIGIN`), not the API's — the dashboard proxies `/v1/*` through to the
-   API (`vite.config.ts` in dev, `nginx.conf.template` in prod), so Google's redirect
+4. **Authorized redirect URIs** — exact, byte-for-byte. These point at the dashboard's
+   origin (`DASHBOARD_ORIGIN`), not the API's: the dashboard proxies `/v1/*` through to
+   the API (`vite.config.ts` in dev, `nginx.conf.template` in prod), so Google's redirect
    lands on the dashboard's origin first:
    - `http://localhost:5173/v1/auth/google/callback`
-   - `https://<your-dashboard>.up.railway.app/v1/auth/google/callback`
+   - `https://<your-dashboard-domain>/v1/auth/google/callback`
 
    Authorized JavaScript origins: none needed — the browser never calls Google
    directly, only the API does, server-side.
 
-5. Copy the **Client ID** and **Client secret**. The secret is an API-service env var
-   only — it never becomes a `VITE_*` variable, and never ends up in the dashboard's
-   build output.
+5. Copy the **Client ID** and **Client secret** into the API service's environment. The
+   secret is an API-service env var only — it never becomes a `VITE_*` variable, and
+   never ends up in the dashboard's build output.
 
 ## Deploy
 
@@ -619,16 +551,20 @@ an nginx container (`apps/dashboard/Dockerfile`) built from a static Vite build;
 part of `docker-compose.yml` because it's stateless and has no dependency on the other
 three services being colocated.
 
-**Env vars the onboarding work added:**
+**Environment variables:**
 
-| Var                    | Where              | Notes                                                                                                                                                       |
-| ---------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PASSWORD_PEPPER`      | API                | Required — boot fails without it (`R11.3`'s existing fail-fast behaviour). A different value from local, generated the same way as the other three peppers. |
-| `GOOGLE_CLIENT_ID`     | API                | Optional — Google sign-in registers its routes only if this and the secret are both set.                                                                    |
-| `GOOGLE_CLIENT_SECRET` | API                | Optional. Server-side only — never a build-time `VITE_*` var.                                                                                               |
-| `DASHBOARD_ORIGIN`     | API                | Already existed for CORS; also now the origin the Google redirect URI is built from.                                                                        |
-| `API_ORIGIN`           | Dashboard, runtime | nginx's proxy target for `/v1/*` — `nginx.conf.template`'s `envsubst` reads it at container start.                                                          |
-| `VITE_API_URL`         | Dashboard, build   | Set to **empty** now — the dashboard calls `/v1/*` same-origin through the proxy, not an absolute API origin.                                               |
+| Var                    | Where              | Notes                                                                                                                                       |
+| ---------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PASSWORD_PEPPER`      | API                | Required — boot fails without it (`R11.3`'s fail-fast behaviour). Use a distinct value per environment, generated like the other three peppers. |
+| `GOOGLE_CLIENT_ID`     | API                | Optional — Google sign-in registers its routes only if this and the secret are both set.                                                    |
+| `GOOGLE_CLIENT_SECRET` | API                | Optional. Server-side only — never a build-time `VITE_*` var.                                                                               |
+| `DASHBOARD_ORIGIN`     | API                | Used for CORS, and the origin the Google redirect URI is built from.                                                                        |
+| `API_ORIGIN`           | Dashboard, runtime | nginx's proxy target for `/v1/*` — `nginx.conf.template`'s `envsubst` reads it at container start.                                          |
+| `VITE_API_URL`         | Dashboard, build   | Set to **empty** — the dashboard calls `/v1/*` same-origin through the proxy, not an absolute API origin.                                   |
+
+Secret values (peppers, encryption keys, provider credentials) belong in the platform's
+secret store or a gitignored local `.env`, never in the repository. `.env.example` lists
+every required key with empty values.
 
 The dashboard and API being same-origin (via the proxy) is what lets the session cookie
 stay `SameSite=Lax` instead of the weaker `SameSite=None; Secure` that a genuine
@@ -642,8 +578,9 @@ which message the user actually read, so `channel_verified` — and therefore
 `channel_scores`' per-channel verification rate, `G1`'s metric — is decided by rule: the
 last channel that delivered, falling back to the last one sent, or `null` when nothing was
 sent. The rule, why it is last-delivered rather than first-attempt, the residual bias it
-cannot remove, and the constant-`"whatsapp"` bug that made this metric meaningless for
-six phases are all in `docs/findings/channel-attribution.md`.
+cannot remove, and the constant-`"whatsapp"` bug that made this metric meaningless for a
+long stretch of development are all documented in
+`docs/findings/channel-attribution.md`.
 
 **A `failed` verification carries no reason code.** `R1.2.6`'s `/check` outcome
 vocabulary (`verified`, `invalid_code`, `expired`, `already_verified`,
@@ -651,17 +588,13 @@ vocabulary (`verified`, `invalid_code`, `expired`, `already_verified`,
 but a verification that reaches the terminal `failed` state via chain exhaustion (every
 channel timed out or hard-errored, with no `/check` ever attempted) exposes the same
 bare `"status": "failed"` as a verification that failed for some other reason — a caller
-can't distinguish "every channel we tried couldn't reach this number" from other
+can't distinguish "every channel tried couldn't reach this number" from other
 terminal-failure paths, or get a per-channel breakdown, from `GET /verification/:id`
 alone (that detail exists in `GET /verification/:id/trace`'s `attempts` array, but the
 trace endpoint is a debugging/dashboard view, not the integration-facing contract).
-Not built — noting it as a gap rather than adding a reason-code field speculatively.
+Not built — noted as a gap rather than adding a reason-code field speculatively.
 
-## Resume line
-
-> Built a provider-independent OTP verification router (Node/TS, Postgres, Redis,
-> BullMQ) with outcome-scored channel selection and automatic fallback; measured
-> **4.6pp higher verification rate** than SMS-only routing and **9.7s lower p95**
-> (27.5s vs 37.2s) than a fixed WhatsApp-first fallback chain, across 10,000 simulated
-> verifications (seed 42, `india-mixed` scenario — see Simulation results above for
-> method, the ~6% domestic-only cost figure, and the model's SMS-reachability caveat).
+**Not production infrastructure.** This project has not been operated under real
+traffic, has no on-call or incident process, and — per the platform constraints above —
+has never delivered a production OTP to a real recipient. The measured results come from
+a deterministic simulation, not from production telemetry.
