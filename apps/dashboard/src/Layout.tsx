@@ -8,6 +8,26 @@ const NAV_ITEMS = [
   { to: "/trace", label: "Trace" },
 ];
 
+/** Inline rather than a lucide-react dependency — one icon does not earn a package
+ * (TECHSTACK.md). Traced from lucide's `book-open`. */
+function BookOpenIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-4 w-4"
+      aria-hidden="true"
+    >
+      <path d="M12 7v14" />
+      <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
+    </svg>
+  );
+}
+
 export function Layout({ children }: { children: ReactNode }) {
   const { auth, logout } = useAuth();
 
@@ -34,6 +54,21 @@ export function Layout({ children }: { children: ReactNode }) {
                 {item.label}
               </NavLink>
             ))}
+
+            {/* Set apart from the analytics screens above it: Docs is a reference
+                surface, not another view onto this account's data. */}
+            <NavLink
+              to="/docs"
+              className={({ isActive }) =>
+                cn(
+                  "mt-2 flex items-center gap-2 border-t border-slate-100 px-3 pb-2 pt-3 text-sm font-medium",
+                  isActive ? "text-slate-900" : "text-slate-600 hover:text-slate-900",
+                )
+              }
+            >
+              <BookOpenIcon />
+              Docs
+            </NavLink>
           </nav>
         )}
       </aside>
