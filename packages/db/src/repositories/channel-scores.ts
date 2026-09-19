@@ -74,6 +74,14 @@ export type AggregatedChannelStat = Readonly<{
  * a `Date` bound by the one raw tagged query left in this package reaches the wire
  * protocol unserialized and throws "Received an instance of Date".
  *
+ * The window is closed at both ends, `[windowStart, windowEnd]`. `sent_at` is the app's
+ * own `new Date()` (delivery-attempts.ts) at millisecond precision, and the only caller
+ * passes `new Date()` as `windowEnd`, so a half-open `< windowEnd` dropped every attempt
+ * sent in the same millisecond the job read the clock — inclusion decided by how long one
+ * UPDATE round trip happened to take, which made the result machine-dependent. Successive
+ * runs already overlap (each is a rolling 24h window ending now), so counting a boundary
+ * attempt in two of them costs nothing; dropping it loses a send from the denominator.
+ *
  * Defence in depth, not a load-bearing guard today: the public demo
  * (apps/api/src/routes/demo.ts) is a pure simulation over a Redis session — it never
  * calls startVerification, so no `delivery_attempts` row for `DEMO_ACCOUNT_ID` should
@@ -107,7 +115,7 @@ export async function computeChannelStats(
     WHERE da.sent_at IS NOT NULL
       AND da.country IS NOT NULL
       AND da.sent_at >= ${windowStart.toISOString()}::timestamptz
-      AND da.sent_at < ${windowEnd.toISOString()}::timestamptz
+      AND da.sent_at <= ${windowEnd.toISOString()}::timestamptz
       AND da.account_id <> ${DEMO_ACCOUNT_ID}
     GROUP BY da.channel, da.country
   `;

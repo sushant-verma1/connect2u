@@ -11,6 +11,7 @@ import {
   markDeliveryAttemptSent,
 } from "@otp-router/db/repositories/delivery-attempts";
 import { insertVerification } from "@otp-router/db/repositories/verifications";
+import { computeChannelStats } from "@otp-router/db/repositories/channel-scores";
 import { closeQueues, createQueues, type Queues } from "@otp-router/worker/queue/queues";
 import { createScoreRecomputeProcessor } from "@otp-router/worker/processors/score-recompute";
 import { SCORE_RECOMPUTE_QUEUE_NAME } from "@otp-router/core/queue/score-recompute-job";
@@ -332,5 +333,47 @@ describe("Phase 5 — score-recompute writes channel_scores", () => {
       new Date(String(score?.window_end)).getTime() -
       new Date(String(score?.window_start)).getTime();
     expect(spanMs).toBe(24 * 60 * 60 * 1000);
+  });
+
+  // The window is closed at both ends: `sent_at` and the job's `windowEnd` are both the
+  // app's `new Date()` at millisecond precision, so on a host where the UPDATE round
+  // trip finishes inside one millisecond they are equal. A half-open upper bound made
+  // that send vanish from the aggregate — the same fixture passing or failing on machine
+  // speed alone. `windowEnd` here is the row's own `sent_at`, the worst case, on purpose.
+  it("counts an attempt sent at exactly windowEnd", async () => {
+    const { accountId } = await seedAccount("Boundary");
+    const verificationId = `ver_${ulid()}`;
+    await insertVerification(infra.pg, {
+      id: verificationId,
+      accountId,
+      phoneHash: hashPhone("+919876543210", PHONE_HASH_PEPPER),
+      phoneEncrypted: "enc",
+      codeHmac: "hmac",
+      codeEncrypted: "enc",
+      channelChain: ["whatsapp"],
+      channelTimeoutsMs: { whatsapp: 10_000 },
+      expiresAt: new Date(Date.now() + 60_000),
+      metadataJson: {},
+      idempotencyKey: null,
+    });
+    const attempt = await insertDeliveryAttempt(infra.pg, {
+      id: `att_${ulid()}`,
+      verificationId,
+      accountId,
+      channel: "whatsapp",
+      provider: "simulated",
+      status: "queued",
+    });
+    const sent = await markDeliveryAttemptSent(infra.pg, {
+      id: attempt.id,
+      providerMessageId: `sim_${ulid()}`,
+      country: "IN",
+    });
+    const sentAt = sent?.sentAt;
+    expect(sentAt).toBeInstanceOf(Date);
+    if (!sentAt) return;
+
+    const stats = await computeChannelStats(infra.pg, new Date(sentAt.getTime() - 60_000), sentAt);
+    expect(stats.find((s) => s.channel === "whatsapp" && s.country === "IN")?.sends).toBe(1);
   });
 });
