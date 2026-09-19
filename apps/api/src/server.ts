@@ -16,7 +16,11 @@ const app = await buildApp(config, pg, redis, bullConnection);
 await redis.connect();
 
 try {
-  await app.listen({ port: config.port, host: "0.0.0.0" });
+  // Railway's private network is IPv6-only (api.railway.internal is AAAA-only), and
+  // 0.0.0.0 binds the IPv4 stack alone — the dashboard's nginx would connect to an
+  // address nothing is listening on. "::" is dual-stack (Node leaves ipv6Only off),
+  // so docker-compose and IPv4 health checks keep working.
+  await app.listen({ port: config.port, host: "::" });
 } catch (err) {
   app.log.error(err);
   process.exit(1);

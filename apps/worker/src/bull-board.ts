@@ -37,6 +37,8 @@ export async function startBullBoard(
     return phoneNumber ? sent.filter((message) => message.phoneNumber === phoneNumber) : sent;
   });
 
-  await app.listen({ port, host: "0.0.0.0" });
+  // Dual-stack for the same reason as apps/api/src/server.ts: Railway's
+  // *.railway.internal names resolve to IPv6 only.
+  await app.listen({ port, host: "::" });
   return app;
 }
