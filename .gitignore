@@ -8,3 +8,8 @@ coverage
 # Local agent-tooling state, not project source
 .claude/
 .serena/
+README1.md
+PLAN.md
+REQUIREMENTS.md
+TECHSTACK.md
+
